@@ -1,0 +1,7 @@
+build/
+*.exe
+*.log
+node_modules/
+out/
+target/
+.vscode-test/

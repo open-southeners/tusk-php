@@ -1,0 +1,10 @@
+{
+  "phpVersion": "8.5",
+  "framework": "auto",
+  "includePaths": ["src", "app", "lib"],
+  "excludePaths": ["vendor", "node_modules", ".git", "storage", "var/cache"],
+  "containerAware": true,
+  "diagnosticsEnabled": true,
+  "maxIndexFiles": 10000,
+  "logLevel": "info"
+}

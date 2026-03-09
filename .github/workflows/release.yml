@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Derive release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Tag '${GITHUB_REF_NAME}' does not contain a valid semantic version" >&2
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - name: Sync release version into extension manifests
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix editors/vscode version "$VERSION" --no-git-tag-version
+          sed -i -E '0,/^version = ".*"$/s//version = "'"$VERSION"'"/' editors/zed/Cargo.toml
+          sed -i -E '0,/^version = ".*"$/s//version = "'"$VERSION"'"/' editors/zed/extension.toml
+
+      - name: Extract release notes from changelog
+        id: changelog
+        uses: release-flow/keep-a-changelog-action@v2
+        with:
+          command: query
+          changelog: CHANGELOG.md
+          version: ${{ steps.version.outputs.value }}
+
+      - name: Build release artifacts
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          mkdir -p "dist/php-lsp-zed-${VERSION}"
+
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            IFS='/' read -r goos goarch <<< "$target"
+            output="dist/php-lsp-${goos}-${goarch}"
+            if [[ "$goos" == "windows" ]]; then
+              output+=".exe"
+            fi
+            echo "Building ${goos}/${goarch}"
+            GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
+              go build -ldflags="-s -w -X main.version=${VERSION}" -trimpath -o "$output" ./cmd/php-lsp/
+          done
+
+          npm --prefix editors/vscode install
+          npm --prefix editors/vscode run compile
+          cp README.md editors/vscode/README.md
+          cp CHANGELOG.md editors/vscode/CHANGELOG.md
+          (
+            cd editors/vscode
+            npx --yes @vscode/vsce package \
+              --out "../../dist/php-lsp-vscode-${VERSION}.vsix" \
+              --allow-missing-repository \
+              --skip-license
+          )
+
+          cargo build \
+            --manifest-path editors/zed/Cargo.toml \
+            --target wasm32-wasip1 \
+            --release
+
+          cp editors/zed/extension.toml "dist/php-lsp-zed-${VERSION}/"
+          cp editors/zed/Cargo.toml "dist/php-lsp-zed-${VERSION}/"
+          cp editors/zed/Cargo.lock "dist/php-lsp-zed-${VERSION}/"
+          cp editors/zed/target/wasm32-wasip1/release/php_lsp_zed.wasm "dist/php-lsp-zed-${VERSION}/"
+          (
+            cd dist
+            zip -r "php-lsp-zed-${VERSION}.zip" "php-lsp-zed-${VERSION}"
+          )
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: php-lsp ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.release-notes }}
+          files: |
+            dist/php-lsp-linux-amd64
+            dist/php-lsp-linux-arm64
+            dist/php-lsp-darwin-amd64
+            dist/php-lsp-darwin-arm64
+            dist/php-lsp-windows-amd64.exe
+            dist/php-lsp-vscode-${{ steps.version.outputs.value }}.vsix
+            dist/php-lsp-zed-${{ steps.version.outputs.value }}.zip
