@@ -29,6 +29,7 @@ type PropertyNode struct {
 	IsStatic   bool
 	DocComment string
 	StartLine  int
+	StartCol   int
 }
 
 type MethodNode struct {
@@ -41,6 +42,7 @@ type MethodNode struct {
 	IsFinal    bool
 	DocComment string
 	StartLine  int
+	StartCol   int
 }
 
 type ConstantNode struct {
@@ -48,6 +50,7 @@ type ConstantNode struct {
 	Value     string
 	Type      TypeNode
 	StartLine int
+	StartCol  int
 }
 
 type ClassNode struct {
@@ -73,6 +76,7 @@ type InterfaceNode struct {
 	Extends    []string
 	Methods    []MethodNode
 	StartLine  int
+	StartCol   int
 	DocComment string
 }
 
@@ -82,6 +86,7 @@ type TraitNode struct {
 	Properties []PropertyNode
 	Methods    []MethodNode
 	StartLine  int
+	StartCol   int
 	DocComment string
 }
 
@@ -89,6 +94,7 @@ type EnumCaseNode struct {
 	Name      string
 	Value     string
 	StartLine int
+	StartCol  int
 }
 
 type EnumNode struct {
@@ -99,6 +105,7 @@ type EnumNode struct {
 	Methods    []MethodNode
 	Implements []string
 	StartLine  int
+	StartCol   int
 	DocComment string
 }
 
@@ -108,6 +115,7 @@ type FunctionNode struct {
 	Params     []ParamNode
 	ReturnType TypeNode
 	StartLine  int
+	StartCol   int
 	DocComment string
 }
 
@@ -296,13 +304,13 @@ func toFileNode(result *ParseResult) *FileNode {
 			DocComment: classDef.DocComment,
 		}
 		for _, propertyDef := range classDef.Properties {
-			classNode.Properties = append(classNode.Properties, toPropertyNode(propertyDef))
+			classNode.Properties = append(classNode.Properties, toPropertyNode(result, propertyDef))
 		}
 		for _, methodDef := range classDef.Methods {
-			classNode.Methods = append(classNode.Methods, toMethodNode(methodDef))
+			classNode.Methods = append(classNode.Methods, toMethodNode(result, methodDef))
 		}
 		for _, constantDef := range classDef.Constants {
-			classNode.Constants = append(classNode.Constants, toConstantNode(constantDef))
+			classNode.Constants = append(classNode.Constants, toConstantNode(result, constantDef))
 		}
 		file.Classes = append(file.Classes, classNode)
 	}
@@ -313,9 +321,10 @@ func toFileNode(result *ParseResult) *FileNode {
 			FullName:  interfaceDef.FullName,
 			Extends:   append([]string(nil), interfaceDef.Extends...),
 			StartLine: interfaceDef.Line,
+			StartCol:  startColumnForDeclaration(result, interfaceDef.Name, interfaceDef.Line, TokenInterface),
 		}
 		for _, methodDef := range interfaceDef.Methods {
-			ifaceNode.Methods = append(ifaceNode.Methods, toMethodNode(methodDef))
+			ifaceNode.Methods = append(ifaceNode.Methods, toMethodNode(result, methodDef))
 		}
 		file.Interfaces = append(file.Interfaces, ifaceNode)
 	}
@@ -325,12 +334,13 @@ func toFileNode(result *ParseResult) *FileNode {
 			Name:      traitDef.Name,
 			FullName:  traitDef.FullName,
 			StartLine: traitDef.Line,
+			StartCol:  startColumnForDeclaration(result, traitDef.Name, traitDef.Line, TokenTrait),
 		}
 		for _, propertyDef := range traitDef.Properties {
-			traitNode.Properties = append(traitNode.Properties, toPropertyNode(propertyDef))
+			traitNode.Properties = append(traitNode.Properties, toPropertyNode(result, propertyDef))
 		}
 		for _, methodDef := range traitDef.Methods {
-			traitNode.Methods = append(traitNode.Methods, toMethodNode(methodDef))
+			traitNode.Methods = append(traitNode.Methods, toMethodNode(result, methodDef))
 		}
 		file.Traits = append(file.Traits, traitNode)
 	}
@@ -342,16 +352,18 @@ func toFileNode(result *ParseResult) *FileNode {
 			BackedType: enumDef.BackedType,
 			Implements: append([]string(nil), enumDef.Implements...),
 			StartLine:  enumDef.Line,
+			StartCol:   startColumnForDeclaration(result, enumDef.Name, enumDef.Line, TokenEnum),
 		}
 		for _, enumCase := range enumDef.Cases {
 			enumNode.Cases = append(enumNode.Cases, EnumCaseNode{
 				Name:      enumCase.Name,
 				Value:     enumCase.Value,
 				StartLine: enumCase.Line,
+				StartCol:  nameColumnOnLine(result, enumCase.Name, enumCase.Line),
 			})
 		}
 		for _, methodDef := range enumDef.Methods {
-			enumNode.Methods = append(enumNode.Methods, toMethodNode(methodDef))
+			enumNode.Methods = append(enumNode.Methods, toMethodNode(result, methodDef))
 		}
 		file.Enums = append(file.Enums, enumNode)
 	}
@@ -362,6 +374,7 @@ func toFileNode(result *ParseResult) *FileNode {
 			FullName:   functionDef.FullName,
 			ReturnType: TypeNode{Name: functionDef.ReturnType},
 			StartLine:  functionDef.Line,
+			StartCol:   startColumnForDeclaration(result, functionDef.Name, functionDef.Line, TokenFunction),
 			DocComment: functionDef.DocComment,
 		}
 		for _, paramDef := range functionDef.Params {
@@ -371,13 +384,13 @@ func toFileNode(result *ParseResult) *FileNode {
 	}
 
 	for _, constantDef := range result.Constants {
-		file.Constants = append(file.Constants, toConstantNode(constantDef))
+		file.Constants = append(file.Constants, toConstantNode(result, constantDef))
 	}
 
 	return file
 }
 
-func toPropertyNode(propertyDef PropertyDef) PropertyNode {
+func toPropertyNode(result *ParseResult, propertyDef PropertyDef) PropertyNode {
 	return PropertyNode{
 		Name:       propertyDef.Name,
 		Type:       TypeNode{Name: propertyDef.Type},
@@ -385,10 +398,11 @@ func toPropertyNode(propertyDef PropertyDef) PropertyNode {
 		IsStatic:   propertyDef.IsStatic,
 		DocComment: propertyDef.DocComment,
 		StartLine:  propertyDef.Line,
+		StartCol:   nameColumnOnLine(result, propertyDef.Name, propertyDef.Line),
 	}
 }
 
-func toMethodNode(methodDef MethodDef) MethodNode {
+func toMethodNode(result *ParseResult, methodDef MethodDef) MethodNode {
 	methodNode := MethodNode{
 		Name:       methodDef.Name,
 		ReturnType: TypeNode{Name: methodDef.ReturnType},
@@ -398,6 +412,7 @@ func toMethodNode(methodDef MethodDef) MethodNode {
 		IsFinal:    methodDef.IsFinal,
 		DocComment: methodDef.DocComment,
 		StartLine:  methodDef.Line,
+		StartCol:   startColumnForDeclaration(result, methodDef.Name, methodDef.Line, TokenFunction),
 	}
 	for _, paramDef := range methodDef.Params {
 		methodNode.Params = append(methodNode.Params, toParamNode(paramDef))
@@ -413,12 +428,13 @@ func toParamNode(paramDef ParamDef) ParamNode {
 	}
 }
 
-func toConstantNode(constantDef ConstantDef) ConstantNode {
+func toConstantNode(result *ParseResult, constantDef ConstantDef) ConstantNode {
 	return ConstantNode{
 		Name:      constantDef.Name,
 		Value:     constantDef.Value,
 		Type:      TypeNode{Name: constantDef.Type},
 		StartLine: constantDef.Line,
+		StartCol:  nameColumnOnLine(result, constantDef.Name, constantDef.Line),
 	}
 }
 
@@ -438,6 +454,27 @@ func startColumnForDeclaration(result *ParseResult, name string, line int, kind 
 			}
 		}
 		return token.Column
+	}
+	return 0
+}
+
+// nameColumnOnLine finds the column of an identifier token with the given name on the given line.
+// Falls back to searching for a variable token ($name) for property declarations.
+func nameColumnOnLine(result *ParseResult, name string, line int) int {
+	for _, token := range result.Tokens {
+		if token.Line != line {
+			if token.Line > line {
+				break
+			}
+			continue
+		}
+		if token.Kind == TokenIdentifier && token.Value == name {
+			return token.Column
+		}
+		// For properties, the name includes $ in the token
+		if token.Kind == TokenVariable && (token.Value == name || token.Value == "$"+name) {
+			return token.Column
+		}
 	}
 	return 0
 }
