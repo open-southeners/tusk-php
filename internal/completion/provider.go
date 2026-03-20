@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/open-southeners/php-lsp/internal/container"
+	"github.com/open-southeners/php-lsp/internal/models"
 	"github.com/open-southeners/php-lsp/internal/parser"
 	"github.com/open-southeners/php-lsp/internal/protocol"
 	"github.com/open-southeners/php-lsp/internal/symbols"
@@ -12,13 +13,19 @@ import (
 )
 
 type Provider struct {
-	index     *symbols.Index
-	container *container.ContainerAnalyzer
-	framework string
+	index          *symbols.Index
+	container      *container.ContainerAnalyzer
+	framework      string
+	arrayResolver  *models.FrameworkArrayResolver
 }
 
 func NewProvider(index *symbols.Index, ca *container.ContainerAnalyzer, framework string) *Provider {
 	return &Provider{index: index, container: ca, framework: framework}
+}
+
+// SetArrayResolver sets the framework array resolver for config/request/model key completion.
+func (p *Provider) SetArrayResolver(resolver *models.FrameworkArrayResolver) {
+	p.arrayResolver = resolver
 }
 
 func (p *Provider) GetCompletions(uri, source string, pos protocol.Position) []protocol.CompletionItem {
@@ -64,9 +71,9 @@ func (p *Provider) GetCompletions(uri, source string, pos protocol.Position) []p
 		currentNS := extractNamespace(source)
 		return p.completeUse(prefix, currentNS)
 	}
-	// Array key completion: $var['partial or $var["partial
-	if varName, partial, quote, ok := extractArrayKeyContext(prefix); ok {
-		return p.completeArrayKeys(source, pos, varName, partial, quote)
+	// Array key completion: $var['partial or $var['key1']['partial (nested)
+	if ctx := parseArrayKeyContext(prefix); ctx != nil {
+		return p.completeArrayKeys(source, pos, ctx)
 	}
 	if filter, quoteCtx, ok := extractContainerArgContext(trimmed); ok {
 		currentNS := extractNamespace(source)
@@ -540,79 +547,166 @@ func (p *Provider) completeAttribute() []protocol.CompletionItem {
 	return items
 }
 
+// arrayKeyContext holds the parsed context for array key completion.
+type arrayKeyContext struct {
+	VarName   string   // e.g. "$config"
+	AccessKeys []string // e.g. ["database"] for $config['database']['
+	Partial   string   // partial key typed so far
+	Quote     string   // quote character used ("'" or "\"" or "")
+}
+
 // extractArrayKeyContext detects if the cursor is inside an array key access:
-// $var['partial or $var["partial. Returns the variable name, partial key typed,
-// the quote character, and true if matched.
+// $var['partial, $var["partial, or nested: $var['key1']['partial
+// Returns the context and true if matched.
 func extractArrayKeyContext(prefix string) (varName, partial, quote string, ok bool) {
+	ctx := parseArrayKeyContext(prefix)
+	if ctx == nil {
+		return
+	}
+	return ctx.VarName, ctx.Partial, ctx.Quote, true
+}
+
+// parseArrayKeyContext parses the full array access chain from the prefix.
+// Returns nil if the cursor is not inside an array key context.
+func parseArrayKeyContext(prefix string) *arrayKeyContext {
 	i := len(prefix) - 1
 
-	// Step 1: scan backward through partial key text (letters typed after the quote)
+	// Step 1: extract the partial key at cursor (text after opening quote)
 	partialStart := i + 1
 	for i >= 0 && prefix[i] != '\'' && prefix[i] != '"' && prefix[i] != '[' {
 		i--
 	}
 	if i < 0 {
-		return
+		return nil
 	}
 
-	// Step 2: detect quote or bare bracket
+	var partial, quote string
 	if prefix[i] == '\'' || prefix[i] == '"' {
 		quote = string(prefix[i])
 		partial = prefix[i+1 : partialStart]
-		i-- // move before quote
+		i--
 	} else if prefix[i] == '[' {
-		// Bare bracket, no quote yet
 		partial = ""
-		// Stay on [, will be consumed below
 	}
 
-	// Step 3: skip whitespace, then expect [
+	// Step 2: expect [
 	for i >= 0 && (prefix[i] == ' ' || prefix[i] == '\t') {
 		i--
 	}
 	if i < 0 {
-		return
+		return nil
 	}
 	if prefix[i] == '[' {
-		i-- // consume [
+		i--
 	} else if quote == "" {
-		// Already consumed [ above in step 2
+		// [ was already consumed in step 1
 	} else {
-		return // no [ found
+		return nil
 	}
 
-	// Step 4: skip whitespace before [
+	// Step 3: collect preceding completed access keys: ]['key2']['key1']
+	// Working backward through the chain
+	var accessKeys []string
+	for i >= 0 {
+		// Skip whitespace
+		for i >= 0 && (prefix[i] == ' ' || prefix[i] == '\t') {
+			i--
+		}
+		if i < 0 {
+			break
+		}
+
+		// Check for ] (end of a completed access)
+		if prefix[i] != ']' {
+			break
+		}
+		i-- // skip ]
+
+		// Expect closing quote
+		if i < 0 || (prefix[i] != '\'' && prefix[i] != '"') {
+			break
+		}
+		closeQuote := prefix[i]
+		i--
+
+		// Scan backward for opening quote
+		keyEnd := i + 1
+		for i >= 0 && prefix[i] != closeQuote {
+			i--
+		}
+		if i < 0 {
+			break
+		}
+		key := prefix[i+1 : keyEnd]
+		i-- // skip opening quote
+
+		// Expect [
+		for i >= 0 && (prefix[i] == ' ' || prefix[i] == '\t') {
+			i--
+		}
+		if i < 0 || prefix[i] != '[' {
+			break
+		}
+		i-- // skip [
+
+		// Prepend key (we're going backward)
+		accessKeys = append([]string{key}, accessKeys...)
+	}
+
+	// Step 4: skip whitespace before the first [
 	for i >= 0 && (prefix[i] == ' ' || prefix[i] == '\t') {
 		i--
 	}
 	if i < 0 {
-		return
+		return nil
 	}
 
-	// Step 5: extract $variable name backward
+	// Step 5: extract $variable name
 	end := i + 1
 	for i >= 0 && isCompletionWordChar(prefix[i]) {
 		i--
 	}
 	if i >= 0 && prefix[i] == '$' {
-		varName = prefix[i:end]
-		ok = true
+		return &arrayKeyContext{
+			VarName:    prefix[i:end],
+			AccessKeys: accessKeys,
+			Partial:    partial,
+			Quote:      quote,
+		}
 	}
-	return
+	return nil
 }
 
 // completeArrayKeys provides completion items for array keys.
-// It resolves the variable's type from docblocks/params and extracts shape fields,
-// then falls back to scanning literal array assignments in scope.
-func (p *Provider) completeArrayKeys(source string, pos protocol.Position, varName, partial, quote string) []protocol.CompletionItem {
+// It resolves the variable's type from docblocks/params, drills into nested
+// shapes via accessKeys, then falls back to scanning literal assignments.
+func (p *Provider) completeArrayKeys(source string, pos protocol.Position, ctx *arrayKeyContext) []protocol.CompletionItem {
 	var keys []types.ShapeField
 
 	// 1. Try to resolve from docblock shapes (param type hints, @var annotations)
-	keys = p.resolveArrayKeysFromType(source, pos, varName)
+	keys = p.resolveArrayKeysFromType(source, pos, ctx.VarName)
 
 	// 2. Fall back to literal assignment scanning
 	if len(keys) == 0 {
-		keys = scanLiteralArrayKeys(source, pos, varName)
+		keys = scanLiteralArrayKeys(source, pos, ctx.VarName)
+	}
+
+	// 3. Drill into nested shapes via accessKeys
+	for _, accessKey := range ctx.AccessKeys {
+		var nestedType string
+		for _, f := range keys {
+			if f.Key == accessKey {
+				nestedType = f.Type
+				break
+			}
+		}
+		if nestedType == "" {
+			return nil // key not found in shape
+		}
+		keys = types.ParseArrayShape(nestedType)
+		if len(keys) == 0 {
+			return nil // not a nested shape
+		}
 	}
 
 	if len(keys) == 0 {
@@ -621,12 +715,12 @@ func (p *Provider) completeArrayKeys(source string, pos protocol.Position, varNa
 
 	// Default quote
 	q := "'"
-	if quote == "\"" {
+	if ctx.Quote == "\"" {
 		q = "\""
 	}
 
 	var items []protocol.CompletionItem
-	lpartial := strings.ToLower(partial)
+	lpartial := strings.ToLower(ctx.Partial)
 	for _, k := range keys {
 		if k.Key == "" {
 			continue // skip positional fields
@@ -640,11 +734,9 @@ func (p *Provider) completeArrayKeys(source string, pos protocol.Position, varNa
 		}
 
 		insertText := k.Key
-		if quote != "" {
-			// User already typed opening quote, add key + closing quote
+		if ctx.Quote != "" {
 			insertText = k.Key + q
 		} else {
-			// No quote yet, wrap fully
 			insertText = q + k.Key + q
 		}
 
@@ -747,17 +839,59 @@ func (p *Provider) resolveArrayKeysFromType(source string, pos protocol.Position
 			continue
 		}
 		rhs := strings.TrimSpace(rest[1:])
-		// $var = $this->method() or $var = someFunc()
-		// Try to resolve the method/function return type
+
+		// Try framework-specific resolver first (config(), $request->validated(), etc.)
+		if p.arrayResolver != nil {
+			if fields := p.arrayResolver.ResolveCallReturnKeys(rhs, source); len(fields) > 0 {
+				return fields
+			}
+		}
+
+		// Try to resolve the method/function return type from docblocks
 		if retType := p.resolveCallReturnType(rhs, source); retType != "" {
 			if fields := types.ParseArrayShape(retType); len(fields) > 0 {
 				return fields
+			}
+		}
+
+		// Check framework resolver for method calls: $this->method() or ClassName::method()
+		if p.arrayResolver != nil {
+			if classFQN, methodName := parseMethodCall(rhs, file); classFQN != "" && methodName != "" {
+				if fields := p.arrayResolver.ResolveMethodReturnKeys(classFQN, methodName); len(fields) > 0 {
+					return fields
+				}
 			}
 		}
 		break
 	}
 
 	return nil
+}
+
+// parseMethodCall extracts class FQN and method name from "$this->method()" or "$var->method()".
+func parseMethodCall(expr string, file *parser.FileNode) (classFQN, methodName string) {
+	expr = strings.TrimSuffix(strings.TrimSpace(expr), ";")
+	if parenIdx := strings.Index(expr, "("); parenIdx > 0 {
+		expr = expr[:parenIdx]
+	}
+	if !strings.Contains(expr, "->") {
+		return
+	}
+	parts := strings.Split(expr, "->")
+	methodName = parts[len(parts)-1]
+
+	target := strings.TrimSpace(parts[0])
+	if target == "$this" && file != nil && len(file.Classes) > 0 {
+		cls := file.Classes[0]
+		if cls.FullName != "" {
+			classFQN = cls.FullName
+		} else if file.Namespace != "" {
+			classFQN = file.Namespace + "\\" + cls.Name
+		} else {
+			classFQN = cls.Name
+		}
+	}
+	return
 }
 
 // extractShapeFromDocParams parses a docblock to find @param with array shape
@@ -862,62 +996,41 @@ func scanLiteralArrayKeys(source string, pos protocol.Position, varName string) 
 			if strings.HasPrefix(rest, "=") {
 				rhs := strings.TrimSpace(rest[1:])
 				if strings.HasPrefix(rhs, "[") || strings.HasPrefix(strings.ToLower(rhs), "array(") {
-					// Scan lines forward to collect the full array literal
-					arrayKeys := extractKeysFromArrayLiteral(lines, i)
-					for _, k := range arrayKeys {
-						if !seen[k] {
-							seen[k] = true
-							keys = append(keys, types.ShapeField{Key: k})
-						}
+					// Collect the full array literal text, then parse it
+					arrayText := collectArrayLiteral(lines, i)
+					parsed := parseArrayLiteralToShape(arrayText)
+					if len(parsed) > 0 {
+						keys = parsed
+						break
 					}
-					break
+					// Empty literal (e.g. $arr = []) — continue to find incremental assignments
 				}
 			}
 		}
 
-		// Pattern: $varName['key'] = ... (incremental building)
-		if strings.HasPrefix(trimmed, varName+"[") {
-			after := trimmed[len(varName)+1:]
-			if len(after) > 2 && (after[0] == '\'' || after[0] == '"') {
-				q := after[0]
-				endQ := strings.IndexByte(after[1:], q)
-				if endQ > 0 {
-					key := after[1 : endQ+1]
-					if !seen[key] {
-						seen[key] = true
-						keys = append(keys, types.ShapeField{Key: key})
-					}
-				}
-			}
+		// Pattern: $varName['key'] = ... (incremental building — must have ] then =)
+		if k := extractIncrementalKey(trimmed, varName); k != "" && !seen[k] {
+			seen[k] = true
+			keys = append(keys, types.ShapeField{Key: k})
 		}
 	}
 
 	// Also scan forward for incremental assignments
 	for i := pos.Line + 1; i < len(lines) && i <= pos.Line+50; i++ {
 		trimmed := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(trimmed, varName+"[") {
-			after := trimmed[len(varName)+1:]
-			if len(after) > 2 && (after[0] == '\'' || after[0] == '"') {
-				q := after[0]
-				endQ := strings.IndexByte(after[1:], q)
-				if endQ > 0 {
-					key := after[1 : endQ+1]
-					if !seen[key] {
-						seen[key] = true
-						keys = append(keys, types.ShapeField{Key: key})
-					}
-				}
-			}
+		if k := extractIncrementalKey(trimmed, varName); k != "" && !seen[k] {
+			seen[k] = true
+			keys = append(keys, types.ShapeField{Key: k})
 		}
 	}
 
 	return keys
 }
 
-// extractKeysFromArrayLiteral extracts string keys from an array literal
-// starting at the given line. Handles multi-line arrays.
-func extractKeysFromArrayLiteral(lines []string, startLine int) []string {
-	var keys []string
+// collectArrayLiteral collects the full text of an array literal starting from
+// startLine, tracking bracket depth to find the end.
+func collectArrayLiteral(lines []string, startLine int) string {
+	var sb strings.Builder
 	depth := 0
 	started := false
 
@@ -925,32 +1038,214 @@ func extractKeysFromArrayLiteral(lines []string, startLine int) []string {
 		line := lines[i]
 		for j := 0; j < len(line); j++ {
 			ch := line[j]
-			if ch == '[' || (ch == '(' && started) {
+			if ch == '[' {
 				depth++
-				if !started {
-					started = true
-				}
-			} else if ch == ']' || (ch == ')' && started) {
+				started = true
+			} else if ch == ']' {
 				depth--
-				if depth == 0 {
-					return keys
+			}
+			if started {
+				sb.WriteByte(ch)
+			}
+			if started && depth == 0 {
+				return sb.String()
+			}
+		}
+		if started {
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String()
+}
+
+// parseArrayLiteralToShape parses a PHP array literal string into ShapeFields,
+// preserving nested structure so drilling works.
+// Input: "['host' => 'localhost', 'options' => ['timeout' => 30, 'retries' => 3]]"
+func parseArrayLiteralToShape(arrayText string) []types.ShapeField {
+	// Strip outer [ and ]
+	arrayText = strings.TrimSpace(arrayText)
+	if len(arrayText) < 2 {
+		return nil
+	}
+	if arrayText[0] == '[' && arrayText[len(arrayText)-1] == ']' {
+		arrayText = arrayText[1 : len(arrayText)-1]
+	}
+
+	return parseLiteralEntries(arrayText)
+}
+
+// parseLiteralEntries parses comma-separated key => value entries,
+// respecting nested brackets, strings, and parentheses.
+func parseLiteralEntries(content string) []types.ShapeField {
+	var fields []types.ShapeField
+	depth := 0
+	inString := byte(0)
+	start := 0
+
+	for i := 0; i < len(content); i++ {
+		ch := content[i]
+		if inString != 0 {
+			if ch == inString && (i == 0 || content[i-1] != '\\') {
+				inString = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			inString = ch
+		case '[', '(':
+			depth++
+		case ']', ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				if f := parseLiteralEntry(content[start:i]); f != nil {
+					fields = append(fields, *f)
 				}
-			} else if depth == 1 && (ch == '\'' || ch == '"') {
-				// Extract string key
-				endQ := strings.IndexByte(line[j+1:], ch)
-				if endQ >= 0 {
-					key := line[j+1 : j+1+endQ]
-					// Check that this is a key (followed by =>)
-					rest := strings.TrimSpace(line[j+1+endQ+1:])
-					if strings.HasPrefix(rest, "=>") {
-						keys = append(keys, key)
-					}
-					j = j + 1 + endQ // skip past closing quote
-				}
+				start = i + 1
 			}
 		}
 	}
-	return keys
+	// Last entry
+	if start < len(content) {
+		if f := parseLiteralEntry(content[start:]); f != nil {
+			fields = append(fields, *f)
+		}
+	}
+	return fields
+}
+
+// parseLiteralEntry parses a single "'key' => value" entry.
+func parseLiteralEntry(entry string) *types.ShapeField {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return nil
+	}
+
+	// Find => separator (respecting strings and nesting)
+	arrowIdx := -1
+	depth := 0
+	inString := byte(0)
+	for i := 0; i < len(entry)-1; i++ {
+		ch := entry[i]
+		if inString != 0 {
+			if ch == inString && (i == 0 || entry[i-1] != '\\') {
+				inString = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			inString = ch
+		case '[', '(':
+			depth++
+		case ']', ')':
+			depth--
+		case '=':
+			if depth == 0 && i+1 < len(entry) && entry[i+1] == '>' {
+				arrowIdx = i
+				goto found
+			}
+		}
+	}
+found:
+	if arrowIdx < 0 {
+		return nil // no arrow, skip (positional entries)
+	}
+
+	keyPart := strings.TrimSpace(entry[:arrowIdx])
+	valuePart := strings.TrimSpace(entry[arrowIdx+2:])
+
+	// Extract key from quotes
+	if len(keyPart) >= 2 && (keyPart[0] == '\'' || keyPart[0] == '"') && keyPart[len(keyPart)-1] == keyPart[0] {
+		keyPart = keyPart[1 : len(keyPart)-1]
+	} else {
+		return nil // non-string key, skip
+	}
+
+	// Determine the type of the value
+	valueType := inferLiteralValueType(valuePart)
+
+	return &types.ShapeField{Key: keyPart, Type: valueType}
+}
+
+// inferLiteralValueType infers a type string for a PHP literal value.
+// For nested arrays, builds an "array{...}" shape string so drilling works.
+func inferLiteralValueType(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.TrimSuffix(value, ",")
+	value = strings.TrimSpace(value)
+
+	if value == "" {
+		return "mixed"
+	}
+
+	// Nested array: [ ... ]
+	if strings.HasPrefix(value, "[") {
+		nested := parseArrayLiteralToShape(value)
+		if len(nested) > 0 {
+			// Build array{key: type, ...} shape string
+			var parts []string
+			for _, f := range nested {
+				if f.Key != "" {
+					parts = append(parts, f.Key+": "+f.Type)
+				}
+			}
+			if len(parts) > 0 {
+				return "array{" + strings.Join(parts, ", ") + "}"
+			}
+		}
+		return "array"
+	}
+
+	// String literals
+	if len(value) >= 2 && (value[0] == '\'' || value[0] == '"') {
+		return "string"
+	}
+	// Boolean
+	lower := strings.ToLower(value)
+	if lower == "true" || lower == "false" {
+		return "bool"
+	}
+	// Null
+	if lower == "null" {
+		return "null"
+	}
+	// Numeric
+	if len(value) > 0 && (value[0] >= '0' && value[0] <= '9' || value[0] == '-') {
+		if strings.ContainsAny(value, ".eE") {
+			return "float"
+		}
+		return "int"
+	}
+	return "mixed"
+}
+
+// extractIncrementalKey extracts the key from "$var['key'] = ..." patterns,
+// verifying it's actually an assignment (has ] followed by =).
+func extractIncrementalKey(trimmed, varName string) string {
+	if !strings.HasPrefix(trimmed, varName+"[") {
+		return ""
+	}
+	after := trimmed[len(varName)+1:]
+	if len(after) < 3 || (after[0] != '\'' && after[0] != '"') {
+		return ""
+	}
+	q := after[0]
+	endQ := strings.IndexByte(after[1:], q)
+	if endQ <= 0 {
+		return ""
+	}
+	// Check that closing quote is followed by ] then =
+	rest := strings.TrimSpace(after[endQ+2:])
+	if !strings.HasPrefix(rest, "]") {
+		return ""
+	}
+	afterBracket := strings.TrimSpace(rest[1:])
+	if !strings.HasPrefix(afterBracket, "=") {
+		return ""
+	}
+	return after[1 : endQ+1]
 }
 
 // extractContainerArgContext detects whether the cursor is inside a container

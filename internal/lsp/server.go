@@ -20,6 +20,7 @@ import (
 	"github.com/open-southeners/php-lsp/internal/container"
 	"github.com/open-southeners/php-lsp/internal/diagnostics"
 	"github.com/open-southeners/php-lsp/internal/hover"
+	"github.com/open-southeners/php-lsp/internal/models"
 	"github.com/open-southeners/php-lsp/internal/protocol"
 	"github.com/open-southeners/php-lsp/internal/symbols"
 )
@@ -245,6 +246,7 @@ func (s *Server) handleInitialize(msg *jsonRPCMessage) {
 	s.index.RegisterBuiltins()
 	s.container = container.NewContainerAnalyzer(s.index, s.rootPath, s.framework)
 	s.completion = completion.NewProvider(s.index, s.container, s.framework)
+	s.completion.SetArrayResolver(models.NewFrameworkArrayResolver(s.index, s.rootPath, s.framework))
 	s.hover = hover.NewProvider(s.index, s.container, s.framework)
 	s.diag = diagnostics.NewProvider(s.index, s.framework, s.rootPath, s.logger, s.cfg)
 	s.analyzer = analyzer.NewAnalyzer(s.index, s.container)

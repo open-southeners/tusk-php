@@ -8,6 +8,7 @@ import (
 	"github.com/open-southeners/php-lsp/internal/parser"
 	"github.com/open-southeners/php-lsp/internal/protocol"
 	"github.com/open-southeners/php-lsp/internal/symbols"
+	"github.com/open-southeners/php-lsp/internal/types"
 )
 
 type Provider struct {
@@ -26,6 +27,12 @@ func (p *Provider) GetHover(uri, source string, pos protocol.Position) *protocol
 		return nil
 	}
 	line := lines[pos.Line]
+
+	// Check for array key hover: $config['key'] or $config['db']['host'] — cursor on a key
+	if ctx, ok := getArrayKeyContext(line, pos.Character); ok {
+		return p.hoverArrayKey(source, pos, ctx)
+	}
+
 	word := getWordAt(source, pos)
 	if word == "" {
 		return nil
@@ -898,4 +905,460 @@ func getWordAt(source string, pos protocol.Position) string {
 
 func isWordChar(ch byte) bool {
 	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '\\'
+}
+
+// hoverArrayKeyContext holds the parsed context for hovering an array key.
+type hoverArrayKeyContext struct {
+	VarName    string   // e.g. "$config"
+	AccessKeys []string // preceding completed keys, e.g. ["database"] for $config['database']['host']
+	CurrentKey string   // the key the cursor is on, e.g. "host"
+}
+
+// getArrayKeyContext checks if the cursor is on a string key inside an array access
+// expression like $config['key'] or $config['db']['host'].
+func getArrayKeyContext(line string, character int) (*hoverArrayKeyContext, bool) {
+	if character >= len(line) || len(line) < 4 {
+		return nil, false
+	}
+
+	// Step 1: find the string literal boundaries around the cursor
+	left := character
+	for left > 0 && line[left] != '\'' && line[left] != '"' {
+		if line[left] == ']' || line[left] == '[' {
+			return nil, false
+		}
+		left--
+	}
+	if left <= 0 || (line[left] != '\'' && line[left] != '"') {
+		return nil, false
+	}
+	openQuote := line[left]
+
+	right := character
+	if right < len(line) && line[right] == openQuote {
+		right++
+	} else {
+		for right < len(line) && line[right] != openQuote {
+			right++
+		}
+		if right >= len(line) {
+			return nil, false
+		}
+		right++
+	}
+
+	if left+1 >= right-1 {
+		return nil, false
+	}
+	currentKey := line[left+1 : right-1]
+	if currentKey == "" {
+		return nil, false
+	}
+
+	// Step 2: expect [ before the opening quote
+	i := left - 1
+	for i >= 0 && (line[i] == ' ' || line[i] == '\t') {
+		i--
+	}
+	if i < 0 || line[i] != '[' {
+		return nil, false
+	}
+	i--
+
+	// Step 3: collect preceding completed access keys backward: ]['key2']['key1']
+	var accessKeys []string
+	for i >= 0 {
+		for i >= 0 && (line[i] == ' ' || line[i] == '\t') {
+			i--
+		}
+		if i < 0 || line[i] != ']' {
+			break
+		}
+		i-- // skip ]
+
+		if i < 0 || (line[i] != '\'' && line[i] != '"') {
+			break
+		}
+		closeQ := line[i]
+		i--
+
+		keyEnd := i + 1
+		for i >= 0 && line[i] != closeQ {
+			i--
+		}
+		if i < 0 {
+			break
+		}
+		key := line[i+1 : keyEnd]
+		i-- // skip opening quote
+
+		for i >= 0 && (line[i] == ' ' || line[i] == '\t') {
+			i--
+		}
+		if i < 0 || line[i] != '[' {
+			break
+		}
+		i-- // skip [
+		accessKeys = append([]string{key}, accessKeys...)
+	}
+
+	// Step 4: skip whitespace and extract $variable
+	for i >= 0 && (line[i] == ' ' || line[i] == '\t') {
+		i--
+	}
+	if i < 0 {
+		return nil, false
+	}
+
+	end := i + 1
+	for i >= 0 && isWordChar(line[i]) {
+		i--
+	}
+	if i >= 0 && line[i] == '$' {
+		return &hoverArrayKeyContext{
+			VarName:    line[i:end],
+			AccessKeys: accessKeys,
+			CurrentKey: currentKey,
+		}, true
+	}
+	return nil, false
+}
+
+// getArrayKeyAt is a convenience wrapper for backward compatibility in tests.
+func getArrayKeyAt(line string, character int) (varName, key string, ok bool) {
+	ctx, found := getArrayKeyContext(line, character)
+	if !found {
+		return "", "", false
+	}
+	return ctx.VarName, ctx.CurrentKey, true
+}
+
+// hoverArrayKey provides hover information for an array key, including nested access.
+func (p *Provider) hoverArrayKey(source string, pos protocol.Position, ctx *hoverArrayKeyContext) *protocol.Hover {
+	// Resolve top-level shape
+	fields := p.resolveArrayShape(source, pos, ctx.VarName)
+	if len(fields) == 0 {
+		fields = scanArrayKeysForHover(source, pos, ctx.VarName)
+	}
+
+	// Drill into nested shapes via accessKeys
+	for _, accessKey := range ctx.AccessKeys {
+		var nestedType string
+		for _, f := range fields {
+			if f.Key == accessKey {
+				nestedType = f.Type
+				break
+			}
+		}
+		if nestedType == "" {
+			return nil
+		}
+		fields = types.ParseArrayShape(nestedType)
+		if len(fields) == 0 {
+			return nil
+		}
+	}
+
+	// Find the current key in the (possibly nested) shape
+	for _, f := range fields {
+		if f.Key == ctx.CurrentKey {
+			var sb strings.Builder
+			sb.WriteString("```php\n")
+			if f.Type != "" {
+				sb.WriteString(fmt.Sprintf("(array key) %s $%s", f.Type, ctx.CurrentKey))
+			} else {
+				sb.WriteString(fmt.Sprintf("(array key) $%s", ctx.CurrentKey))
+			}
+			if f.Optional {
+				sb.WriteString(" (optional)")
+			}
+			sb.WriteString("\n```")
+			return &protocol.Hover{Contents: protocol.MarkupContent{Kind: "markdown", Value: sb.String()}}
+		}
+	}
+
+	return nil
+}
+
+// resolveArrayShape resolves shape fields for a variable from docblock annotations.
+func (p *Provider) resolveArrayShape(source string, pos protocol.Position, varName string) []types.ShapeField {
+	file := parser.ParseFile(source)
+	if file == nil {
+		return nil
+	}
+	bare := strings.TrimPrefix(varName, "$")
+
+	// Check method parameters
+	for _, cls := range file.Classes {
+		for _, m := range cls.Methods {
+			if pos.Line >= m.StartLine {
+				if m.DocComment != "" {
+					doc := parser.ParseDocBlock(m.DocComment)
+					if doc != nil {
+						for _, param := range doc.Params {
+							if param.Name == "$"+bare {
+								if fields := types.ParseArrayShape(param.Type); len(fields) > 0 {
+									return fields
+								}
+							}
+						}
+					}
+				}
+				for _, param := range m.Params {
+					if param.Name == varName {
+						if fields := types.ParseArrayShape(param.Type.Name); len(fields) > 0 {
+							return fields
+						}
+					}
+				}
+			}
+		}
+	}
+	for _, fn := range file.Functions {
+		if pos.Line >= fn.StartLine {
+			if fn.DocComment != "" {
+				doc := parser.ParseDocBlock(fn.DocComment)
+				if doc != nil {
+					for _, param := range doc.Params {
+						if param.Name == "$"+bare {
+							if fields := types.ParseArrayShape(param.Type); len(fields) > 0 {
+								return fields
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Check @var annotations
+	lines := strings.Split(source, "\n")
+	for i := pos.Line; i >= 0 && i >= pos.Line-10; i-- {
+		if i >= len(lines) {
+			continue
+		}
+		line := strings.TrimSpace(lines[i])
+		if strings.Contains(line, "@var") && strings.Contains(line, varName) {
+			varIdx := strings.Index(line, "@var ")
+			if varIdx >= 0 {
+				rest := strings.TrimSpace(line[varIdx+5:])
+				typeStr, _ := types.ExtractDocTypeString(rest)
+				if fields := types.ParseArrayShape(typeStr); len(fields) > 0 {
+					return fields
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// scanArrayKeysForHover extracts keys from literal array assignments,
+// preserving nested structure for drilling.
+func scanArrayKeysForHover(source string, pos protocol.Position, varName string) []types.ShapeField {
+	lines := strings.Split(source, "\n")
+	var keys []types.ShapeField
+	seen := make(map[string]bool)
+
+	for i := pos.Line; i >= 0 && i >= pos.Line-200; i-- {
+		if i >= len(lines) {
+			continue
+		}
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(trimmed, varName) {
+			rest := strings.TrimSpace(trimmed[len(varName):])
+			if strings.HasPrefix(rest, "=") {
+				rhs := strings.TrimSpace(rest[1:])
+				if strings.HasPrefix(rhs, "[") || strings.HasPrefix(strings.ToLower(rhs), "array(") {
+					arrayText := collectArrayLiteralText(lines, i)
+					return parseLiteralArrayToShape(arrayText)
+				}
+			}
+		}
+		// Incremental: $var['key'] = ... (must have = after ])
+		if strings.HasPrefix(trimmed, varName+"[") {
+			after := trimmed[len(varName)+1:]
+			if len(after) > 2 && (after[0] == '\'' || after[0] == '"') {
+				q := after[0]
+				endQ := strings.IndexByte(after[1:], q)
+				if endQ > 0 {
+					afterClose := strings.TrimSpace(after[endQ+2:])
+					if !strings.HasPrefix(afterClose, "]") {
+						continue
+					}
+					afterBracket := strings.TrimSpace(afterClose[1:])
+					if !strings.HasPrefix(afterBracket, "=") {
+						continue
+					}
+					key := after[1 : endQ+1]
+					if !seen[key] {
+						seen[key] = true
+						keys = append(keys, types.ShapeField{Key: key})
+					}
+				}
+			}
+		}
+	}
+	return keys
+}
+
+// collectArrayLiteralText collects the full text of an array literal starting from startLine.
+func collectArrayLiteralText(lines []string, startLine int) string {
+	var sb strings.Builder
+	depth := 0
+	started := false
+	for i := startLine; i < len(lines) && i < startLine+100; i++ {
+		line := lines[i]
+		for j := 0; j < len(line); j++ {
+			ch := line[j]
+			if ch == '[' {
+				depth++
+				started = true
+			} else if ch == ']' {
+				depth--
+			}
+			if started {
+				sb.WriteByte(ch)
+			}
+			if started && depth == 0 {
+				return sb.String()
+			}
+		}
+		if started {
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String()
+}
+
+// parseLiteralArrayToShape parses a PHP array literal into ShapeFields with nested structure.
+func parseLiteralArrayToShape(arrayText string) []types.ShapeField {
+	arrayText = strings.TrimSpace(arrayText)
+	if len(arrayText) < 2 || arrayText[0] != '[' || arrayText[len(arrayText)-1] != ']' {
+		return nil
+	}
+	return parseLiteralEntries(arrayText[1 : len(arrayText)-1])
+}
+
+func parseLiteralEntries(content string) []types.ShapeField {
+	var fields []types.ShapeField
+	depth := 0
+	inString := byte(0)
+	start := 0
+	for i := 0; i < len(content); i++ {
+		ch := content[i]
+		if inString != 0 {
+			if ch == inString && (i == 0 || content[i-1] != '\\') {
+				inString = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			inString = ch
+		case '[', '(':
+			depth++
+		case ']', ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				if f := parseLiteralEntry(content[start:i]); f != nil {
+					fields = append(fields, *f)
+				}
+				start = i + 1
+			}
+		}
+	}
+	if start < len(content) {
+		if f := parseLiteralEntry(content[start:]); f != nil {
+			fields = append(fields, *f)
+		}
+	}
+	return fields
+}
+
+func parseLiteralEntry(entry string) *types.ShapeField {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return nil
+	}
+	arrowIdx := -1
+	depth := 0
+	inString := byte(0)
+	for i := 0; i < len(entry)-1; i++ {
+		ch := entry[i]
+		if inString != 0 {
+			if ch == inString && (i == 0 || entry[i-1] != '\\') {
+				inString = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			inString = ch
+		case '[', '(':
+			depth++
+		case ']', ')':
+			depth--
+		case '=':
+			if depth == 0 && i+1 < len(entry) && entry[i+1] == '>' {
+				arrowIdx = i
+				goto found
+			}
+		}
+	}
+found:
+	if arrowIdx < 0 {
+		return nil
+	}
+	keyPart := strings.TrimSpace(entry[:arrowIdx])
+	valuePart := strings.TrimSpace(entry[arrowIdx+2:])
+	if len(keyPart) >= 2 && (keyPart[0] == '\'' || keyPart[0] == '"') && keyPart[len(keyPart)-1] == keyPart[0] {
+		keyPart = keyPart[1 : len(keyPart)-1]
+	} else {
+		return nil
+	}
+	valueType := inferNestedType(valuePart)
+	return &types.ShapeField{Key: keyPart, Type: valueType}
+}
+
+func inferNestedType(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.TrimSuffix(value, ",")
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "mixed"
+	}
+	if strings.HasPrefix(value, "[") {
+		nested := parseLiteralArrayToShape(value)
+		if len(nested) > 0 {
+			var parts []string
+			for _, f := range nested {
+				if f.Key != "" {
+					parts = append(parts, f.Key+": "+f.Type)
+				}
+			}
+			if len(parts) > 0 {
+				return "array{" + strings.Join(parts, ", ") + "}"
+			}
+		}
+		return "array"
+	}
+	if len(value) >= 2 && (value[0] == '\'' || value[0] == '"') {
+		return "string"
+	}
+	lower := strings.ToLower(value)
+	if lower == "true" || lower == "false" {
+		return "bool"
+	}
+	if lower == "null" {
+		return "null"
+	}
+	if len(value) > 0 && (value[0] >= '0' && value[0] <= '9' || value[0] == '-') {
+		if strings.ContainsAny(value, ".eE") {
+			return "float"
+		}
+		return "int"
+	}
+	return "mixed"
 }

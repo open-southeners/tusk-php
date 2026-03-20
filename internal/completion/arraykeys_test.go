@@ -217,6 +217,189 @@ function test() {
 	}
 }
 
+func TestCompleteNestedArrayKeys(t *testing.T) {
+	idx := symbols.NewIndex()
+	idx.RegisterBuiltins()
+	idx.IndexFile("file:///test.php", `<?php
+namespace App;
+class Service {
+    /**
+     * @param array{database: array{host: string, port: int}, cache: array{driver: string, ttl: int}} $config
+     */
+    public function connect(array $config): void {}
+}
+`)
+	p := NewProvider(idx, nil, "")
+
+	source := `<?php
+namespace App;
+class Service {
+    /**
+     * @param array{database: array{host: string, port: int}, cache: array{driver: string, ttl: int}} $config
+     */
+    public function connect(array $config): void {
+        $config['database']['
+    }
+}
+`
+	items := p.GetCompletions("file:///test.php", source, protocol.Position{Line: 7, Character: 29})
+
+	labels := make(map[string]bool)
+	for _, item := range items {
+		labels[item.Label] = true
+	}
+
+	if !labels["host"] {
+		t.Error("expected 'host' from nested array{database: array{host: string}}")
+	}
+	if !labels["port"] {
+		t.Error("expected 'port' from nested shape")
+	}
+	if labels["driver"] {
+		t.Error("should NOT show 'driver' (that's in cache, not database)")
+	}
+	if labels["database"] {
+		t.Error("should NOT show 'database' (that's the top level)")
+	}
+}
+
+func TestCompleteNestedArrayKeysTopLevel(t *testing.T) {
+	idx := symbols.NewIndex()
+	idx.RegisterBuiltins()
+	idx.IndexFile("file:///test.php", `<?php
+namespace App;
+class Service {
+    /**
+     * @param array{database: array{host: string}, cache: array{driver: string}} $config
+     */
+    public function connect(array $config): void {}
+}
+`)
+	p := NewProvider(idx, nil, "")
+
+	source := `<?php
+namespace App;
+class Service {
+    /**
+     * @param array{database: array{host: string}, cache: array{driver: string}} $config
+     */
+    public function connect(array $config): void {
+        $config['
+    }
+}
+`
+	items := p.GetCompletions("file:///test.php", source, protocol.Position{Line: 7, Character: 17})
+
+	labels := make(map[string]bool)
+	for _, item := range items {
+		labels[item.Label] = true
+	}
+
+	if !labels["database"] {
+		t.Error("expected 'database' at top level")
+	}
+	if !labels["cache"] {
+		t.Error("expected 'cache' at top level")
+	}
+}
+
+func TestParseArrayKeyContextNested(t *testing.T) {
+	tests := []struct {
+		name       string
+		prefix     string
+		wantVar    string
+		wantAccess []string
+		wantOk     bool
+	}{
+		{
+			"single level",
+			"        $config['",
+			"$config",
+			nil,
+			true,
+		},
+		{
+			"two levels",
+			"        $config['database']['",
+			"$config",
+			[]string{"database"},
+			true,
+		},
+		{
+			"three levels",
+			`        $config['database']['replicas']['`,
+			"$config",
+			[]string{"database", "replicas"},
+			true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := parseArrayKeyContext(tt.prefix)
+			if tt.wantOk && ctx == nil {
+				t.Fatal("expected context, got nil")
+			}
+			if !tt.wantOk && ctx != nil {
+				t.Fatal("expected nil context")
+			}
+			if !tt.wantOk {
+				return
+			}
+			if ctx.VarName != tt.wantVar {
+				t.Errorf("VarName = %q, want %q", ctx.VarName, tt.wantVar)
+			}
+			if len(ctx.AccessKeys) != len(tt.wantAccess) {
+				t.Errorf("AccessKeys = %v, want %v", ctx.AccessKeys, tt.wantAccess)
+			} else {
+				for i, k := range ctx.AccessKeys {
+					if k != tt.wantAccess[i] {
+						t.Errorf("AccessKeys[%d] = %q, want %q", i, k, tt.wantAccess[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestCompleteNestedLiteralArrayKeys(t *testing.T) {
+	idx := symbols.NewIndex()
+	p := NewProvider(idx, nil, "")
+
+	source := `<?php
+function test() {
+    $config = [
+        'database' => [
+            'host' => 'localhost',
+            'port' => 3306,
+        ],
+        'cache' => [
+            'driver' => 'redis',
+        ],
+    ];
+    $config['database']['
+}
+`
+	items := p.GetCompletions("file:///test.php", source, protocol.Position{Line: 11, Character: 25})
+
+	labels := make(map[string]bool)
+	for _, item := range items {
+		labels[item.Label] = true
+	}
+
+	if !labels["host"] {
+		t.Error("expected 'host' from nested literal array")
+	}
+	if !labels["port"] {
+		t.Error("expected 'port' from nested literal array")
+	}
+	if labels["driver"] {
+		t.Error("should NOT show 'driver' (that's in cache, not database)")
+	}
+	if labels["database"] {
+		t.Error("should NOT show 'database' (that's the top level)")
+	}
+}
+
 func TestCompleteArrayKeysQuotingBehavior(t *testing.T) {
 	idx := symbols.NewIndex()
 	p := NewProvider(idx, nil, "")
