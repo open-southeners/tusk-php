@@ -260,7 +260,7 @@ func (s *Server) handleInitialize(msg *jsonRPCMessage) {
 			SignatureHelpProvider: &protocol.SignatureHelpOptions{TriggerCharacters: []string{"(", ","}},
 			RenameProvider:       &protocol.RenameOptions{PrepareProvider: true},
 			CodeActionProvider:   &protocol.CodeActionOptions{CodeActionKinds: []string{"refactor", "source"}},
-			ExecuteCommandProvider: &protocol.ExecuteCommandOptions{Commands: []string{"phpLsp.copyNamespace"}},
+			ExecuteCommandProvider: &protocol.ExecuteCommandOptions{Commands: []string{"phpLsp.copyNamespace", "phpLsp.moveToNamespace"}},
 		},
 		ServerInfo: protocol.ServerInfo{Name: ServerName, Version: ServerVersion},
 	})
@@ -438,6 +438,26 @@ func (s *Server) handleExecuteCommand(msg *jsonRPCMessage) {
 				source := s.getDocument(uri)
 				ns := s.analyzer.GetFileNamespace(uri, source)
 				s.sendResponse(msg.ID, ns)
+				return
+			}
+		}
+		s.sendResponse(msg.ID, nil)
+	case "phpLsp.moveToNamespace":
+		// Arguments: [uri, targetNamespace]
+		if len(params.Arguments) >= 2 {
+			var uri, targetNS string
+			if json.Unmarshal(params.Arguments[0], &uri) == nil && json.Unmarshal(params.Arguments[1], &targetNS) == nil {
+				source := s.getDocument(uri)
+				autoload := composer.GetAutoloadPaths(s.rootPath)
+				edit := s.analyzer.MoveToNamespace(uri, source, targetNS, autoload, s.getDocumentReader())
+				if edit != nil {
+					// Apply the edit via workspace/applyEdit
+					s.sendNotification("workspace/applyEdit", protocol.ApplyWorkspaceEditParams{
+						Label: "Move to namespace " + targetNS,
+						Edit:  *edit,
+					})
+				}
+				s.sendResponse(msg.ID, nil)
 				return
 			}
 		}

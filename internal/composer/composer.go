@@ -98,6 +98,66 @@ func parseFiles(files []string, basePath string, isVendor bool) []AutoloadEntry 
 	return entries
 }
 
+// FQNToPath returns the expected file path for a given FQN based on PSR-4 mappings.
+// Only considers non-vendor entries. Returns empty string if no mapping matches.
+func FQNToPath(fqn string, entries []AutoloadEntry) string {
+	var bestNs string
+	var bestPath string
+	for _, entry := range entries {
+		if entry.IsVendor || entry.IsFile || entry.Namespace == "" {
+			continue
+		}
+		prefix := entry.Namespace
+		if fqn == prefix || strings.HasPrefix(fqn, prefix+"\\") {
+			// Longest prefix match wins
+			if len(prefix) > len(bestNs) {
+				bestNs = prefix
+				bestPath = entry.Path
+			}
+		}
+	}
+	if bestNs == "" {
+		return ""
+	}
+	// Strip the namespace prefix from the FQN to get the relative path
+	relative := strings.TrimPrefix(fqn, bestNs)
+	relative = strings.TrimPrefix(relative, "\\")
+	// Convert namespace separators to directory separators
+	relative = strings.ReplaceAll(relative, "\\", string(filepath.Separator))
+	return filepath.Join(bestPath, relative+".php")
+}
+
+// PathToNamespace returns the expected namespace for a file path based on PSR-4 mappings.
+// Only considers non-vendor entries. Returns empty string if no mapping matches.
+func PathToNamespace(filePath string, entries []AutoloadEntry) string {
+	absPath, _ := filepath.Abs(filePath)
+	var bestNs string
+	var bestLen int
+	for _, entry := range entries {
+		if entry.IsVendor || entry.IsFile || entry.Namespace == "" {
+			continue
+		}
+		entryAbs, _ := filepath.Abs(entry.Path)
+		if strings.HasPrefix(absPath, entryAbs+string(filepath.Separator)) {
+			if len(entryAbs) > bestLen {
+				bestLen = len(entryAbs)
+				bestNs = entry.Namespace
+				// Compute relative path and convert to namespace
+				rel, _ := filepath.Rel(entryAbs, absPath)
+				rel = strings.TrimSuffix(rel, ".php")
+				// Get the directory portion (without the class name file)
+				dir := filepath.Dir(rel)
+				if dir == "." {
+					bestNs = entry.Namespace
+				} else {
+					bestNs = entry.Namespace + "\\" + strings.ReplaceAll(dir, string(filepath.Separator), "\\")
+				}
+			}
+		}
+	}
+	return bestNs
+}
+
 func parsePSR4(psr4 map[string]interface{}, basePath string, isVendor bool) []AutoloadEntry {
 	var entries []AutoloadEntry
 	for ns, paths := range psr4 {

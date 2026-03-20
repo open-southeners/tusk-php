@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/open-southeners/php-lsp/internal/completion"
+	"github.com/open-southeners/php-lsp/internal/composer"
 	"github.com/open-southeners/php-lsp/internal/container"
 	"github.com/open-southeners/php-lsp/internal/parser"
 	"github.com/open-southeners/php-lsp/internal/protocol"
@@ -1333,6 +1334,57 @@ func (a *Analyzer) GetCodeActions(uri, source string, params protocol.CodeAction
 		})
 	}
 
+	// Offer "Move to namespace" when cursor is on a type declaration
+	if primaryClass != "" && ns != "" {
+		// Check if cursor is on or near a declaration line
+		cursorLine := params.Range.Start.Line
+		isOnDecl := false
+		for _, cls := range file.Classes {
+			if cls.StartLine == cursorLine {
+				isOnDecl = true
+				break
+			}
+		}
+		if !isOnDecl {
+			for _, iface := range file.Interfaces {
+				if iface.StartLine == cursorLine {
+					isOnDecl = true
+					break
+				}
+			}
+		}
+		if !isOnDecl {
+			for _, en := range file.Enums {
+				if en.StartLine == cursorLine {
+					isOnDecl = true
+					break
+				}
+			}
+		}
+		if !isOnDecl {
+			for _, tr := range file.Traits {
+				if tr.StartLine == cursorLine {
+					isOnDecl = true
+					break
+				}
+			}
+		}
+		if isOnDecl {
+			uriJSON, _ := json.Marshal(uri)
+			// The target namespace will be prompted by the editor extension
+			// For now, provide the command with URI; the extension fills in the target
+			actions = append(actions, protocol.CodeAction{
+				Title: "Move to namespace...",
+				Kind:  "refactor.move",
+				Command: &protocol.Command{
+					Title:     "Move to namespace",
+					Command:   "phpLsp.moveToNamespace",
+					Arguments: []json.RawMessage{uriJSON},
+				},
+			})
+		}
+	}
+
 	return actions
 }
 
@@ -1363,6 +1415,160 @@ func (a *Analyzer) GetFileNamespace(uri, source string) string {
 		return en.Name
 	}
 	return ns
+}
+
+// MoveToNamespace moves the primary type in a file to a new namespace, updating
+// the namespace declaration, all use imports across the workspace, FQN references,
+// and computing the new file path per PSR-4 autoload mappings.
+func (a *Analyzer) MoveToNamespace(uri, source, targetNS string, autoloadEntries []composer.AutoloadEntry, readDocument func(string) string) *protocol.WorkspaceEdit {
+	file := parser.ParseFile(source)
+	if file == nil {
+		return nil
+	}
+
+	oldNS := file.Namespace
+
+	// Find the primary type name
+	typeName := ""
+	for _, cls := range file.Classes {
+		typeName = cls.Name
+		break
+	}
+	if typeName == "" {
+		for _, iface := range file.Interfaces {
+			typeName = iface.Name
+			break
+		}
+	}
+	if typeName == "" {
+		for _, en := range file.Enums {
+			typeName = en.Name
+			break
+		}
+	}
+	if typeName == "" {
+		for _, tr := range file.Traits {
+			typeName = tr.Name
+			break
+		}
+	}
+	if typeName == "" || oldNS == "" {
+		return nil
+	}
+
+	oldFQN := oldNS + "\\" + typeName
+	newFQN := targetNS + "\\" + typeName
+
+	edit := &protocol.WorkspaceEdit{
+		Changes: make(map[string][]protocol.TextEdit),
+	}
+
+	// 1. Update namespace declaration in the source file
+	lines := strings.Split(source, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "namespace ") {
+			// Find "namespace OldNS" and replace with "namespace NewNS"
+			nsStart := strings.Index(line, "namespace ") + len("namespace ")
+			nsEnd := nsStart
+			for nsEnd < len(line) && line[nsEnd] != ';' && line[nsEnd] != ' ' && line[nsEnd] != '{' {
+				nsEnd++
+			}
+			edit.Changes[uri] = append(edit.Changes[uri], protocol.TextEdit{
+				Range: protocol.Range{
+					Start: protocol.Position{Line: i, Character: nsStart},
+					End:   protocol.Position{Line: i, Character: nsEnd},
+				},
+				NewText: targetNS,
+			})
+			break
+		}
+	}
+
+	// 2. Update all references across the workspace
+	allURIs := a.index.GetAllFileURIs()
+	for _, fileURI := range allURIs {
+		if fileURI == uri {
+			continue // Skip the source file (namespace already updated above)
+		}
+		var fileSource string
+		if readDocument != nil {
+			fileSource = readDocument(fileURI)
+		} else {
+			fileSource = a.readFileFromDisk(fileURI)
+		}
+		if fileSource == "" {
+			continue
+		}
+
+		fileLines := strings.Split(fileSource, "\n")
+		var fileEdits []protocol.TextEdit
+
+		for i, line := range fileLines {
+			// Update "use OldNS\TypeName" → "use NewNS\TypeName"
+			// and "use OldNS\TypeName as Alias" → "use NewNS\TypeName as Alias"
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "use ") && strings.Contains(line, oldFQN) {
+				idx := strings.Index(line, oldFQN)
+				if idx >= 0 {
+					fileEdits = append(fileEdits, protocol.TextEdit{
+						Range: protocol.Range{
+							Start: protocol.Position{Line: i, Character: idx},
+							End:   protocol.Position{Line: i, Character: idx + len(oldFQN)},
+						},
+						NewText: newFQN,
+					})
+					continue
+				}
+			}
+
+			// Update fully-qualified references like \OldNS\TypeName
+			fqnWithSlash := "\\" + oldFQN
+			newFQNWithSlash := "\\" + newFQN
+			offset := 0
+			for {
+				idx := strings.Index(line[offset:], fqnWithSlash)
+				if idx < 0 {
+					break
+				}
+				col := offset + idx
+				end := col + len(fqnWithSlash)
+				if end < len(line) && isWordChar(line[end]) {
+					offset = end
+					continue
+				}
+				fileEdits = append(fileEdits, protocol.TextEdit{
+					Range: protocol.Range{
+						Start: protocol.Position{Line: i, Character: col},
+						End:   protocol.Position{Line: i, Character: end},
+					},
+					NewText: newFQNWithSlash,
+				})
+				offset = end
+			}
+		}
+
+		if len(fileEdits) > 0 {
+			edit.Changes[fileURI] = fileEdits
+		}
+	}
+
+	// 3. Compute file move via PSR-4
+	newPath := composer.FQNToPath(newFQN, autoloadEntries)
+	if newPath != "" {
+		oldPath := strings.TrimPrefix(uri, "file://")
+		if newPath != oldPath {
+			edit.DocumentChanges = append(edit.DocumentChanges, protocol.DocumentChange{
+				RenameFile: &protocol.RenameFile{
+					Kind:   "rename",
+					OldURI: uri,
+					NewURI: "file://" + newPath,
+				},
+			})
+		}
+	}
+
+	return edit
 }
 
 func min(a, b int) int {

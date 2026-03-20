@@ -330,7 +330,86 @@ type TextEdit struct {
 
 // WorkspaceEdit represents changes to many resources managed in the workspace.
 type WorkspaceEdit struct {
-	Changes map[string][]TextEdit `json:"changes,omitempty"`
+	Changes         map[string][]TextEdit `json:"changes,omitempty"`
+	DocumentChanges []DocumentChange      `json:"documentChanges,omitempty"`
+}
+
+// DocumentChange is a union type that can be a TextDocumentEdit or a file operation.
+// Only one field should be set.
+type DocumentChange struct {
+	TextDocumentEdit *TextDocumentEdit `json:"-"`
+	RenameFile       *RenameFile       `json:"-"`
+	CreateFile       *CreateFile       `json:"-"`
+	DeleteFile       *DeleteFile       `json:"-"`
+}
+
+// MarshalJSON implements custom marshaling for the DocumentChange union type.
+func (dc DocumentChange) MarshalJSON() ([]byte, error) {
+	if dc.TextDocumentEdit != nil {
+		return json.Marshal(dc.TextDocumentEdit)
+	}
+	if dc.RenameFile != nil {
+		return json.Marshal(dc.RenameFile)
+	}
+	if dc.CreateFile != nil {
+		return json.Marshal(dc.CreateFile)
+	}
+	if dc.DeleteFile != nil {
+		return json.Marshal(dc.DeleteFile)
+	}
+	return []byte("null"), nil
+}
+
+// TextDocumentEdit describes textual changes on a single text document.
+type TextDocumentEdit struct {
+	TextDocument VersionedTextDocumentIdentifier `json:"textDocument"`
+	Edits        []TextEdit                      `json:"edits"`
+}
+
+// VersionedTextDocumentIdentifier identifies a specific version of a text document.
+type VersionedTextDocumentIdentifier struct {
+	URI     string `json:"uri"`
+	Version *int   `json:"version"` // null means the version is unknown
+}
+
+// RenameFile is a file operation to rename/move a file.
+type RenameFile struct {
+	Kind   string             `json:"kind"` // always "rename"
+	OldURI string             `json:"oldUri"`
+	NewURI string             `json:"newUri"`
+	Options *RenameFileOptions `json:"options,omitempty"`
+}
+
+// RenameFileOptions for rename file operations.
+type RenameFileOptions struct {
+	Overwrite      bool `json:"overwrite,omitempty"`
+	IgnoreIfExists bool `json:"ignoreIfExists,omitempty"`
+}
+
+// CreateFile is a file operation to create a file.
+type CreateFile struct {
+	Kind    string              `json:"kind"` // always "create"
+	URI     string              `json:"uri"`
+	Options *CreateFileOptions  `json:"options,omitempty"`
+}
+
+// CreateFileOptions for create file operations.
+type CreateFileOptions struct {
+	Overwrite      bool `json:"overwrite,omitempty"`
+	IgnoreIfExists bool `json:"ignoreIfExists,omitempty"`
+}
+
+// DeleteFile is a file operation to delete a file.
+type DeleteFile struct {
+	Kind    string              `json:"kind"` // always "delete"
+	URI     string              `json:"uri"`
+	Options *DeleteFileOptions  `json:"options,omitempty"`
+}
+
+// DeleteFileOptions for delete file operations.
+type DeleteFileOptions struct {
+	Recursive         bool `json:"recursive,omitempty"`
+	IgnoreIfNotExists bool `json:"ignoreIfNotExists,omitempty"`
 }
 
 // --- Code action types ---
