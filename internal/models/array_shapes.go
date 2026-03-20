@@ -64,7 +64,7 @@ func (r *FrameworkArrayResolver) resolveLaravelConfig(expr string) []types.Shape
 	arg := extractFirstStringArg(expr)
 	if arg == "" {
 		// config() with no args — list top-level config file names
-		return r.listConfigFiles()
+		return r.ListConfigFiles()
 	}
 
 	// Split on dots: 'database.connections.mysql' → ['database', 'connections', 'mysql']
@@ -72,7 +72,7 @@ func (r *FrameworkArrayResolver) resolveLaravelConfig(expr string) []types.Shape
 	configFile := parts[0]
 
 	// Parse the config file
-	keys := r.parseConfigFile(configFile)
+	keys := r.ParseConfigFile(configFile)
 	if keys == nil {
 		return nil
 	}
@@ -98,7 +98,8 @@ func (r *FrameworkArrayResolver) resolveLaravelConfig(expr string) []types.Shape
 	return keys
 }
 
-func (r *FrameworkArrayResolver) listConfigFiles() []types.ShapeField {
+// ListConfigFiles returns all available config file names as shape fields.
+func (r *FrameworkArrayResolver) ListConfigFiles() []types.ShapeField {
 	configDir := filepath.Join(r.rootPath, "config")
 	entries, err := os.ReadDir(configDir)
 	if err != nil {
@@ -115,7 +116,8 @@ func (r *FrameworkArrayResolver) listConfigFiles() []types.ShapeField {
 	return fields
 }
 
-func (r *FrameworkArrayResolver) parseConfigFile(name string) []types.ShapeField {
+// ParseConfigFile parses a config file and returns its top-level shape fields.
+func (r *FrameworkArrayResolver) ParseConfigFile(name string) []types.ShapeField {
 	configPath := filepath.Join(r.rootPath, "config", name+".php")
 	content, err := os.ReadFile(configPath)
 	if err != nil {

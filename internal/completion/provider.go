@@ -75,6 +75,10 @@ func (p *Provider) GetCompletions(uri, source string, pos protocol.Position) []p
 	if ctx := parseArrayKeyContext(prefix); ctx != nil {
 		return p.completeArrayKeys(source, pos, ctx)
 	}
+	// Config key completion: config('database.|') with dot-notation navigation
+	if configPath, partial, quote, ok := extractConfigArgContext(trimmed); ok {
+		return p.completeConfigKeys(configPath, partial, quote)
+	}
 	if filter, quoteCtx, ok := extractContainerArgContext(trimmed); ok {
 		currentNS := extractNamespace(source)
 		return p.completeContainerResolve(source, filter, currentNS, quoteCtx)
@@ -1246,6 +1250,134 @@ func extractIncrementalKey(trimmed, varName string) string {
 		return ""
 	}
 	return after[1 : endQ+1]
+}
+
+// extractConfigArgContext detects if the cursor is inside a config() call.
+// Returns the dot-separated path typed so far, the partial segment being typed,
+// the quote character, and true if matched.
+//
+// Examples:
+//   config('             → configPath="", partial="", quote="'"
+//   config('da           → configPath="", partial="da", quote="'"
+//   config('database.    → configPath="database", partial="", quote="'"
+//   config('database.co  → configPath="database", partial="co", quote="'"
+//   config('database.connections.  → configPath="database.connections", partial="", quote="'"
+func extractConfigArgContext(trimmed string) (configPath, partial, quote string, ok bool) {
+	idx := strings.LastIndex(trimmed, "config(")
+	if idx < 0 {
+		return
+	}
+	after := trimmed[idx+len("config("):]
+	// If there's a closing paren, cursor is past the argument
+	if strings.Contains(after, ")") {
+		return
+	}
+	// Detect quote
+	if len(after) > 0 && (after[0] == '\'' || after[0] == '"') {
+		quote = string(after[0])
+		after = after[1:]
+	} else if len(after) == 0 {
+		// Just "config(" with nothing after — offer quotes
+		return
+	}
+
+	// Split on dots: "database.connections.co" → path="database.connections", partial="co"
+	lastDot := strings.LastIndex(after, ".")
+	if lastDot >= 0 {
+		configPath = after[:lastDot]
+		partial = after[lastDot+1:]
+	} else {
+		configPath = ""
+		partial = after
+	}
+	ok = true
+	return
+}
+
+// completeConfigKeys provides completion for config() string arguments.
+// Offers config file names at the top level, and nested keys via dot notation.
+func (p *Provider) completeConfigKeys(configPath, partial, quote string) []protocol.CompletionItem {
+	if p.arrayResolver == nil {
+		return nil
+	}
+
+	var keys []types.ShapeField
+
+	if configPath == "" {
+		// Top level: list config file names
+		keys = p.arrayResolver.ListConfigFiles()
+	} else {
+		// Drill into the config file via dot-separated path
+		parts := strings.Split(configPath, ".")
+		configFile := parts[0]
+		keys = p.arrayResolver.ParseConfigFile(configFile)
+		if keys == nil {
+			return nil
+		}
+		// Drill through remaining segments
+		for _, segment := range parts[1:] {
+			var nestedType string
+			for _, f := range keys {
+				if f.Key == segment {
+					nestedType = f.Type
+					break
+				}
+			}
+			if nestedType == "" {
+				return nil
+			}
+			keys = types.ParseArrayShape(nestedType)
+			if keys == nil {
+				return nil
+			}
+		}
+	}
+
+	if len(keys) == 0 {
+		return nil
+	}
+
+	var items []protocol.CompletionItem
+	lpartial := strings.ToLower(partial)
+
+	for _, k := range keys {
+		if k.Key == "" {
+			continue
+		}
+		if lpartial != "" && !strings.HasPrefix(strings.ToLower(k.Key), lpartial) {
+			continue
+		}
+
+		detail := k.Type
+		isNested := strings.HasPrefix(k.Type, "array{") || k.Type == "array"
+
+		// InsertText: just the key segment, no quotes (user already has them)
+		insertText := k.Key
+		if isNested {
+			// For nested arrays, append a dot to continue drilling
+			insertText = k.Key + "."
+		}
+
+		kind := protocol.CompletionItemKindProperty
+		if isNested {
+			kind = protocol.CompletionItemKindModule
+		}
+
+		// Sort nested sections after leaf values
+		sortText := "0" + k.Key
+		if isNested {
+			sortText = "1" + k.Key
+		}
+
+		items = append(items, protocol.CompletionItem{
+			Label:      k.Key,
+			Kind:       kind,
+			Detail:     detail,
+			InsertText: insertText,
+			SortText:   sortText,
+		})
+	}
+	return items
 }
 
 // extractContainerArgContext detects whether the cursor is inside a container

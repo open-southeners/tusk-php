@@ -104,7 +104,7 @@ func TestLaravelConfigListFiles(t *testing.T) {
 	r := NewFrameworkArrayResolver(idx, dir, "laravel")
 
 	// config() with no specific file — list available config files
-	fields := r.listConfigFiles()
+	fields := r.ListConfigFiles()
 	keys := make(map[string]bool)
 	for _, f := range fields {
 		keys[f.Key] = true
