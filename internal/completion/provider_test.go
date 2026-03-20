@@ -9,10 +9,10 @@ import (
 
 func TestSortPriority(t *testing.T) {
 	tests := []struct {
-		name     string
-		sym      *symbols.Symbol
-		ns       string
-		wantPfx  string
+		name    string
+		sym     *symbols.Symbol
+		ns      string
+		wantPfx string
 	}{
 		{"same namespace project", &symbols.Symbol{Name: "Foo", FQN: "App\\Models\\Foo", Source: symbols.SourceProject}, "App\\Models", "1"},
 		{"different namespace project", &symbols.Symbol{Name: "Bar", FQN: "App\\Services\\Bar", Source: symbols.SourceProject}, "App\\Models", "2"},
@@ -334,6 +334,21 @@ class Service {
 		}
 		if !labels["VERSION"] {
 			t.Error("expected 'VERSION' via self::")
+		}
+	})
+
+	t.Run("@var annotation resolves member access", func(t *testing.T) {
+		source := "<?php\nnamespace App;\nuse App\\Service;\nfunction test(): void {\n    /** @var Service $svc */\n    $svc = app(Service::class);\n    $svc->\n}\n"
+		items := p.GetCompletions("file:///test.php", source, protocol.Position{Line: 6, Character: 10})
+		labels := map[string]bool{}
+		for _, item := range items {
+			labels[item.Label] = true
+		}
+		if !labels["run"] {
+			t.Error("expected 'run' instance method via @var-resolved $svc->")
+		}
+		if !labels["name"] {
+			t.Error("expected 'name' property via @var-resolved $svc->")
 		}
 	})
 }

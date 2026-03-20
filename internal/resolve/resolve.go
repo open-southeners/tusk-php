@@ -130,6 +130,133 @@ func (r *Resolver) MemberType(member *symbols.Symbol, file *parser.FileNode) str
 	return r.ResolveClassName(typeName, file)
 }
 
+// ResolveVariableType infers the type of a variable from context:
+// method/function parameters, class properties, $var = new ClassName(...),
+// @var annotations, and literal type inference.
+func (r *Resolver) ResolveVariableType(varName string, file *parser.FileNode, source string, pos protocol.Position) string {
+	if file == nil {
+		return ""
+	}
+
+	// Special case: $this
+	if varName == "$this" {
+		return FindEnclosingClass(file, pos)
+	}
+
+	// 1. Check enclosing method/function parameter type hints
+	enclosingMethod := FindEnclosingMethod(file, pos)
+	if enclosingMethod != nil {
+		for _, param := range enclosingMethod.Params {
+			if param.Name == varName {
+				return r.ResolveClassName(param.Type.Name, file)
+			}
+		}
+	}
+	// Also check standalone function parameters
+	for _, fn := range file.Functions {
+		if pos.Line >= fn.StartLine {
+			for _, param := range fn.Params {
+				if param.Name == varName && param.Type.Name != "" {
+					return r.ResolveClassName(param.Type.Name, file)
+				}
+			}
+		}
+	}
+
+	// 2. Check class properties
+	for _, cls := range file.Classes {
+		for _, prop := range cls.Properties {
+			if "$"+prop.Name == varName && prop.Type.Name != "" {
+				return r.ResolveClassName(prop.Type.Name, file)
+			}
+		}
+	}
+
+	lines := strings.Split(source, "\n")
+	bare := strings.TrimPrefix(varName, "$")
+	varPrefix := "$" + bare
+
+	// 3. Look for $var = new ClassName(...) and literal assignments
+	for i := pos.Line; i >= 0 && i >= pos.Line-200; i-- {
+		if i >= len(lines) {
+			continue
+		}
+		trimmed := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(trimmed, varPrefix) {
+			continue
+		}
+		rest := strings.TrimSpace(trimmed[len(varPrefix):])
+		if !strings.HasPrefix(rest, "=") {
+			continue
+		}
+		rhs := strings.TrimSpace(rest[1:])
+		// $var = new ClassName(...)
+		if strings.HasPrefix(rhs, "new ") {
+			className := strings.TrimSpace(rhs[4:])
+			if idx := strings.IndexByte(className, '('); idx >= 0 {
+				className = className[:idx]
+			}
+			className = strings.TrimSuffix(className, ";")
+			className = strings.TrimSpace(className)
+			if className != "" {
+				return r.ResolveClassName(className, file)
+			}
+		}
+		// $var = expr; — infer literal type
+		rhs = strings.TrimSuffix(rhs, ";")
+		rhs = strings.TrimSpace(rhs)
+		if t := InferLiteralType(rhs); t != "" {
+			return t
+		}
+	}
+
+	// 4. Check @var annotations: /** @var ClassName $var */
+	for i := pos.Line; i >= 0 && i >= pos.Line-5; i-- {
+		if i >= len(lines) {
+			continue
+		}
+		line := lines[i]
+		varIdx := strings.Index(line, "@var ")
+		if varIdx < 0 {
+			continue
+		}
+		rest := strings.TrimSpace(line[varIdx+5:])
+		fields := strings.Fields(rest)
+		if len(fields) >= 2 && fields[1] == varPrefix {
+			return r.ResolveClassName(fields[0], file)
+		}
+	}
+
+	return ""
+}
+
+// InferLiteralType returns the PHP type for a literal expression value.
+func InferLiteralType(expr string) string {
+	if expr == "" {
+		return ""
+	}
+	if expr[0] == '\'' || expr[0] == '"' {
+		return "string"
+	}
+	lower := strings.ToLower(expr)
+	if lower == "true" || lower == "false" {
+		return "bool"
+	}
+	if lower == "null" {
+		return "null"
+	}
+	if expr[0] == '[' || strings.HasPrefix(lower, "array(") {
+		return "array"
+	}
+	if expr[0] >= '0' && expr[0] <= '9' || expr[0] == '-' {
+		if strings.ContainsAny(expr, ".eE") {
+			return "float"
+		}
+		return "int"
+	}
+	return ""
+}
+
 // BuildFQN combines a namespace and name into a fully qualified name.
 func BuildFQN(namespace, name string) string {
 	if namespace == "" {

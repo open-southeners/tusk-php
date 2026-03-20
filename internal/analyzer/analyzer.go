@@ -106,7 +106,7 @@ func (a *Analyzer) definitionForVariable(varName string, file *parser.FileNode, 
 	if file == nil {
 		return nil
 	}
-	typeName := a.resolveVariableType(varName, file, source, pos)
+	typeName := a.resolver.ResolveVariableType(varName, file, source, pos)
 	if typeName == "" {
 		return nil
 	}
@@ -261,7 +261,7 @@ func (a *Analyzer) resolveAccessChain(line string, wordStart int, file *parser.F
 	}
 
 	if strings.HasPrefix(target, "$") {
-		return a.resolveVariableType(target, file, source, pos)
+		return a.resolver.ResolveVariableType(target, file, source, pos)
 	}
 
 	// Try as a class name (for static access like Logger::create)
@@ -281,78 +281,6 @@ func (a *Analyzer) resolveAccessChain(line string, wordStart int, file *parser.F
 		return ""
 	}
 	return a.resolver.MemberType(member, file)
-}
-
-// resolveVariableType infers the type of a variable from context.
-func (a *Analyzer) resolveVariableType(varName string, file *parser.FileNode, source string, pos protocol.Position) string {
-	// Check enclosing method parameters
-	enclosingMethod := resolve.FindEnclosingMethod(file, pos)
-	if enclosingMethod != nil {
-		for _, param := range enclosingMethod.Params {
-			if param.Name == varName {
-				return a.resolver.ResolveClassName(param.Type.Name, file)
-			}
-		}
-	}
-
-	// Check class properties
-	for _, cls := range file.Classes {
-		for _, prop := range cls.Properties {
-			if "$"+prop.Name == varName && prop.Type.Name != "" {
-				return a.resolver.ResolveClassName(prop.Type.Name, file)
-			}
-		}
-	}
-
-	lines := strings.Split(source, "\n")
-	bare := strings.TrimPrefix(varName, "$")
-	varPrefix := "$" + bare
-
-	// Look for $var = new ClassName(...)
-	for i := pos.Line; i >= 0 && i >= pos.Line-200; i-- {
-		if i >= len(lines) {
-			continue
-		}
-		trimmed := strings.TrimSpace(lines[i])
-		if !strings.HasPrefix(trimmed, varPrefix) {
-			continue
-		}
-		rest := strings.TrimSpace(trimmed[len(varPrefix):])
-		if !strings.HasPrefix(rest, "=") {
-			continue
-		}
-		rhs := strings.TrimSpace(rest[1:])
-		if strings.HasPrefix(rhs, "new ") {
-			className := strings.TrimSpace(rhs[4:])
-			if idx := strings.IndexByte(className, '('); idx >= 0 {
-				className = className[:idx]
-			}
-			className = strings.TrimSuffix(className, ";")
-			className = strings.TrimSpace(className)
-			if className != "" {
-				return a.resolver.ResolveClassName(className, file)
-			}
-		}
-	}
-
-	// Check @var annotations
-	for i := pos.Line; i >= 0 && i >= pos.Line-5; i-- {
-		if i >= len(lines) {
-			continue
-		}
-		line := lines[i]
-		varIdx := strings.Index(line, "@var ")
-		if varIdx < 0 {
-			continue
-		}
-		rest := strings.TrimSpace(line[varIdx+5:])
-		fields := strings.Fields(rest)
-		if len(fields) >= 2 && fields[1] == varPrefix {
-			return a.resolver.ResolveClassName(fields[0], file)
-		}
-	}
-
-	return ""
 }
 
 // resolveContainerCallType resolves a container call expression to a concrete FQN.

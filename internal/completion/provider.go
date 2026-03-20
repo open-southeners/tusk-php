@@ -8,21 +8,22 @@ import (
 	"github.com/open-southeners/php-lsp/internal/models"
 	"github.com/open-southeners/php-lsp/internal/parser"
 	"github.com/open-southeners/php-lsp/internal/phparray"
-	"github.com/open-southeners/php-lsp/internal/resolve"
 	"github.com/open-southeners/php-lsp/internal/protocol"
+	"github.com/open-southeners/php-lsp/internal/resolve"
 	"github.com/open-southeners/php-lsp/internal/symbols"
 	"github.com/open-southeners/php-lsp/internal/types"
 )
 
 type Provider struct {
-	index          *symbols.Index
-	container      *container.ContainerAnalyzer
-	framework      string
-	arrayResolver  *models.FrameworkArrayResolver
+	index         *symbols.Index
+	container     *container.ContainerAnalyzer
+	resolver      *resolve.Resolver
+	framework     string
+	arrayResolver *models.FrameworkArrayResolver
 }
 
 func NewProvider(index *symbols.Index, ca *container.ContainerAnalyzer, framework string) *Provider {
-	return &Provider{index: index, container: ca, framework: framework}
+	return &Provider{index: index, container: ca, resolver: resolve.NewResolver(index), framework: framework}
 }
 
 // SetArrayResolver sets the framework array resolver for config/request/model key completion.
@@ -236,7 +237,7 @@ func (p *Provider) resolveChainType(source, prefix, op string, pos protocol.Posi
 
 	// $variable-> or $variable::
 	if strings.HasPrefix(target, "$") {
-		return p.resolveVariableType(source, target)
+		return p.resolver.ResolveVariableType(target, file, source, pos)
 	}
 
 	// ClassName:: or ClassName->  (static access or after new)
@@ -437,8 +438,6 @@ func parenBalanced(s string) bool {
 	return depth == 0
 }
 
-
-
 func (p *Provider) completeNew(prefix, currentNS string) []protocol.CompletionItem {
 	var items []protocol.CompletionItem
 	words := strings.Fields(prefix)
@@ -518,10 +517,10 @@ func (p *Provider) completeAttribute() []protocol.CompletionItem {
 
 // arrayKeyContext holds the parsed context for array key completion.
 type arrayKeyContext struct {
-	VarName   string   // e.g. "$config"
+	VarName    string   // e.g. "$config"
 	AccessKeys []string // e.g. ["database"] for $config['database']['
-	Partial   string   // partial key typed so far
-	Quote     string   // quote character used ("'" or "\"" or "")
+	Partial    string   // partial key typed so far
+	Quote      string   // quote character used ("'" or "\"" or "")
 }
 
 // extractArrayKeyContext detects if the cursor is inside an array key access:
@@ -1258,11 +1257,12 @@ func (p *Provider) completeConfigResultKeys(ctx *configResultArrayContext) []pro
 // the quote character, and true if matched.
 //
 // Examples:
-//   config('             → configPath="", partial="", quote="'"
-//   config('da           → configPath="", partial="da", quote="'"
-//   config('database.    → configPath="database", partial="", quote="'"
-//   config('database.co  → configPath="database", partial="co", quote="'"
-//   config('database.connections.  → configPath="database.connections", partial="", quote="'"
+//
+//	config('             → configPath="", partial="", quote="'"
+//	config('da           → configPath="", partial="da", quote="'"
+//	config('database.    → configPath="database", partial="", quote="'"
+//	config('database.co  → configPath="database", partial="co", quote="'"
+//	config('database.connections.  → configPath="database.connections", partial="", quote="'"
 func extractConfigArgContext(trimmed string) (configPath, partial, quote string, ok bool) {
 	idx := strings.LastIndex(trimmed, "config(")
 	if idx < 0 {
@@ -1714,98 +1714,6 @@ func (p *Provider) completeGlobal(prefix, currentNS string) []protocol.Completio
 		}
 	}
 	return items
-}
-
-func (p *Provider) resolveVariableType(source, varName string) string {
-	if varName == "$this" {
-		file := parser.ParseFile(source)
-		if file != nil && len(file.Classes) > 0 {
-			ns := file.Namespace
-			if ns != "" {
-				return ns + "\\" + file.Classes[0].Name
-			}
-			return file.Classes[0].Name
-		}
-		return ""
-	}
-	file := parser.ParseFile(source)
-	if file == nil {
-		return ""
-	}
-	// 1. Check method/function parameters
-	for _, cls := range file.Classes {
-		for _, m := range cls.Methods {
-			for _, param := range m.Params {
-				if param.Name == varName && param.Type.Name != "" {
-					return p.resolveTypeWithFile(param.Type.Name, file)
-				}
-			}
-		}
-	}
-	for _, fn := range file.Functions {
-		for _, param := range fn.Params {
-			if param.Name == varName && param.Type.Name != "" {
-				return p.resolveTypeWithFile(param.Type.Name, file)
-			}
-		}
-	}
-	// 2. Check $var = new ClassName(...) assignments
-	bare := strings.TrimPrefix(varName, "$")
-	for _, line := range strings.Split(source, "\n") {
-		trimmed := strings.TrimSpace(line)
-		// Match: $var = new ClassName(
-		if strings.HasPrefix(trimmed, "$"+bare) {
-			rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "$"+bare))
-			if strings.HasPrefix(rest, "=") {
-				rest = strings.TrimSpace(rest[1:])
-				if strings.HasPrefix(rest, "new ") {
-					className := strings.TrimSpace(rest[4:])
-					// Strip (args...) and trailing ;
-					if idx := strings.IndexByte(className, '('); idx >= 0 {
-						className = className[:idx]
-					}
-					className = strings.TrimSuffix(className, ";")
-					className = strings.TrimSpace(className)
-					if className != "" {
-						return p.resolveClassNameFromSource(className, source)
-					}
-				}
-			}
-		}
-	}
-	// 3. Check class properties
-	for _, cls := range file.Classes {
-		for _, prop := range cls.Properties {
-			if "$"+prop.Name == varName && prop.Type.Name != "" {
-				return p.resolveTypeWithFile(prop.Type.Name, file)
-			}
-		}
-	}
-	return ""
-}
-
-func (p *Provider) resolveTypeWithFile(typeName string, file *parser.FileNode) string {
-	if typeName == "" {
-		return ""
-	}
-	if strings.HasPrefix(typeName, "?") {
-		typeName = typeName[1:]
-	}
-	for _, u := range file.Uses {
-		if u.Alias == typeName {
-			return u.FullName
-		}
-	}
-	if file.Namespace != "" {
-		fqn := file.Namespace + "\\" + typeName
-		if p.index.Lookup(fqn) != nil {
-			return fqn
-		}
-	}
-	if p.index.Lookup(typeName) != nil {
-		return typeName
-	}
-	return typeName
 }
 
 func sortPriority(sym *symbols.Symbol, currentNS string) string {
