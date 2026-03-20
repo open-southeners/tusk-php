@@ -66,15 +66,15 @@ type ParamInfo struct {
 }
 
 type Index struct {
-	mu                    sync.RWMutex
-	symbols               map[string]*Symbol
-	nameIndex             map[string][]string
-	fileSymbols           map[string][]*Symbol
-	namespaceIndex        map[string][]string
-	inheritanceMap        map[string]string
-	implementsMap         map[string][]string   // class → interfaces it implements
-	reverseImplementsMap  map[string][]string   // interface → classes that implement it
-	traitMap              map[string][]string
+	mu                   sync.RWMutex
+	symbols              map[string]*Symbol
+	nameIndex            map[string][]string
+	fileSymbols          map[string][]*Symbol
+	namespaceIndex       map[string][]string
+	inheritanceMap       map[string]string
+	implementsMap        map[string][]string // class → interfaces it implements
+	reverseImplementsMap map[string][]string // interface → classes that implement it
+	traitMap             map[string][]string
 }
 
 func NewIndex() *Index {
@@ -121,7 +121,7 @@ func (idx *Index) IndexFileWithSource(uri string, source string, src SymbolSourc
 		sym := &Symbol{Name: c.Name, FQN: fqn, Kind: KindClass, URI: uri, DocComment: c.DocComment,
 			IsAbstract: c.IsAbstract, IsFinal: c.IsFinal, IsReadonly: c.IsReadonly,
 			Implements: resolvedImpls,
-			Range: symRange(c.StartLine, c.StartCol, len(c.Name))}
+			Range:      symRange(c.StartLine, c.StartCol, len(c.Name))}
 		if c.Extends != "" {
 			sym.Extends = resolve(c.Extends)
 		}
@@ -144,18 +144,7 @@ func (idx *Index) IndexFileWithSource(uri string, source string, src SymbolSourc
 			sym.Children = append(sym.Children, ps)
 			idx.addSymbolWithSource(uri, ps, src)
 		}
-		for _, m := range c.Methods {
-			ms := &Symbol{Name: m.Name, FQN: fqn + "::" + m.Name, Kind: KindMethod, URI: uri,
-				Visibility: m.Visibility, IsStatic: m.IsStatic, IsAbstract: m.IsAbstract, IsFinal: m.IsFinal,
-				ReturnType: resolve(m.ReturnType.Name),
-				DocComment: m.DocComment, ParentFQN: fqn,
-				Range: symRange(m.StartLine, m.StartCol, len(m.Name))}
-			for _, p := range m.Params {
-				ms.Params = append(ms.Params, ParamInfo{Name: p.Name, Type: resolve(p.Type.Name), DefaultValue: p.DefaultValue, IsVariadic: p.IsVariadic, IsReference: p.IsReference})
-			}
-			sym.Children = append(sym.Children, ms)
-			idx.addSymbolWithSource(uri, ms, src)
-		}
+		idx.indexMethods(uri, sym, fqn, c.Methods, src, resolve)
 		for _, co := range c.Constants {
 			cs := &Symbol{Name: co.Name, FQN: fqn + "::" + co.Name, Kind: KindConstant, URI: uri, ParentFQN: fqn,
 				Value: co.Value,
@@ -170,16 +159,7 @@ func (idx *Index) IndexFileWithSource(uri string, source string, src SymbolSourc
 		sym := &Symbol{Name: iface.Name, FQN: fqn, Kind: KindInterface, URI: uri, DocComment: iface.DocComment,
 			Range: symRange(iface.StartLine, iface.StartCol, len(iface.Name))}
 		idx.addSymbolWithSource(uri, sym, src)
-		for _, m := range iface.Methods {
-			ms := &Symbol{Name: m.Name, FQN: fqn + "::" + m.Name, Kind: KindMethod, URI: uri,
-				Visibility: m.Visibility, ReturnType: resolve(m.ReturnType.Name), DocComment: m.DocComment, ParentFQN: fqn,
-				Range: symRange(m.StartLine, m.StartCol, len(m.Name))}
-			for _, p := range m.Params {
-				ms.Params = append(ms.Params, ParamInfo{Name: p.Name, Type: resolve(p.Type.Name), IsVariadic: p.IsVariadic, IsReference: p.IsReference})
-			}
-			sym.Children = append(sym.Children, ms)
-			idx.addSymbolWithSource(uri, ms, src)
-		}
+		idx.indexMethods(uri, sym, fqn, iface.Methods, src, resolve)
 	}
 
 	for _, tr := range file.Traits {
@@ -195,17 +175,7 @@ func (idx *Index) IndexFileWithSource(uri string, source string, src SymbolSourc
 			sym.Children = append(sym.Children, ps)
 			idx.addSymbolWithSource(uri, ps, src)
 		}
-		for _, m := range tr.Methods {
-			ms := &Symbol{Name: m.Name, FQN: fqn + "::" + m.Name, Kind: KindMethod, URI: uri,
-				Visibility: m.Visibility, IsStatic: m.IsStatic, ReturnType: resolve(m.ReturnType.Name),
-				DocComment: m.DocComment, ParentFQN: fqn,
-				Range: symRange(m.StartLine, m.StartCol, len(m.Name))}
-			for _, p := range m.Params {
-				ms.Params = append(ms.Params, ParamInfo{Name: p.Name, Type: resolve(p.Type.Name), IsVariadic: p.IsVariadic, IsReference: p.IsReference})
-			}
-			sym.Children = append(sym.Children, ms)
-			idx.addSymbolWithSource(uri, ms, src)
-		}
+		idx.indexMethods(uri, sym, fqn, tr.Methods, src, resolve)
 	}
 
 	for _, en := range file.Enums {
@@ -227,17 +197,7 @@ func (idx *Index) IndexFileWithSource(uri string, source string, src SymbolSourc
 			sym.Children = append(sym.Children, cs)
 			idx.addSymbolWithSource(uri, cs, src)
 		}
-		for _, m := range en.Methods {
-			ms := &Symbol{Name: m.Name, FQN: fqn + "::" + m.Name, Kind: KindMethod, URI: uri,
-				Visibility: m.Visibility, IsStatic: m.IsStatic, ReturnType: resolve(m.ReturnType.Name),
-				DocComment: m.DocComment, ParentFQN: fqn,
-				Range: symRange(m.StartLine, m.StartCol, len(m.Name))}
-			for _, p := range m.Params {
-				ms.Params = append(ms.Params, ParamInfo{Name: p.Name, Type: resolve(p.Type.Name), IsVariadic: p.IsVariadic, IsReference: p.IsReference})
-			}
-			sym.Children = append(sym.Children, ms)
-			idx.addSymbolWithSource(uri, ms, src)
-		}
+		idx.indexMethods(uri, sym, fqn, en.Methods, src, resolve)
 	}
 
 	for _, fn := range file.Functions {
@@ -256,12 +216,8 @@ func (idx *Index) addSymbol(uri string, sym *Symbol) {
 	idx.nameIndex[sym.Name] = appendUnique(idx.nameIndex[sym.Name], sym.FQN)
 	idx.fileSymbols[uri] = append(idx.fileSymbols[uri], sym)
 	// Index top-level symbols by their namespace
-	if sym.Kind != KindMethod && sym.Kind != KindProperty && sym.Kind != KindConstant && sym.Kind != KindEnumCase {
-		ns := ""
-		if i := strings.LastIndex(sym.FQN, "\\"); i >= 0 {
-			ns = sym.FQN[:i]
-		}
-		idx.namespaceIndex[ns] = appendUnique(idx.namespaceIndex[ns], sym.FQN)
+	if isTopLevelSymbol(sym.Kind) {
+		idx.namespaceIndex[namespaceForFQN(sym.FQN)] = appendUnique(idx.namespaceIndex[namespaceForFQN(sym.FQN)], sym.FQN)
 	}
 }
 
@@ -277,11 +233,8 @@ func (idx *Index) removeFileSymbols(uri string) {
 			idx.nameIndex[sym.Name] = removeFromSlice(fqns, sym.FQN)
 		}
 		// Clean up namespace index
-		if sym.Kind != KindMethod && sym.Kind != KindProperty && sym.Kind != KindConstant && sym.Kind != KindEnumCase {
-			ns := ""
-			if i := strings.LastIndex(sym.FQN, "\\"); i >= 0 {
-				ns = sym.FQN[:i]
-			}
+		if isTopLevelSymbol(sym.Kind) {
+			ns := namespaceForFQN(sym.FQN)
 			if fqns, ok := idx.namespaceIndex[ns]; ok {
 				idx.namespaceIndex[ns] = removeFromSlice(fqns, sym.FQN)
 			}
@@ -296,6 +249,47 @@ func (idx *Index) removeFileSymbols(uri string) {
 		delete(idx.inheritanceMap, sym.FQN)
 	}
 	delete(idx.fileSymbols, uri)
+}
+
+func isTopLevelSymbol(kind SymbolKind) bool {
+	return kind != KindMethod && kind != KindProperty && kind != KindConstant && kind != KindEnumCase
+}
+
+func namespaceForFQN(fqn string) string {
+	if i := strings.LastIndex(fqn, "\\"); i >= 0 {
+		return fqn[:i]
+	}
+	return ""
+}
+
+func (idx *Index) indexMethods(uri string, parent *Symbol, parentFQN string, methods []parser.MethodNode, src SymbolSource, resolve func(string) string) {
+	for _, m := range methods {
+		ms := &Symbol{
+			Name:       m.Name,
+			FQN:        parentFQN + "::" + m.Name,
+			Kind:       KindMethod,
+			URI:        uri,
+			Visibility: m.Visibility,
+			IsStatic:   m.IsStatic,
+			IsAbstract: m.IsAbstract,
+			IsFinal:    m.IsFinal,
+			ReturnType: resolve(m.ReturnType.Name),
+			DocComment: m.DocComment,
+			ParentFQN:  parentFQN,
+			Range:      symRange(m.StartLine, m.StartCol, len(m.Name)),
+		}
+		for _, p := range m.Params {
+			ms.Params = append(ms.Params, ParamInfo{
+				Name:         p.Name,
+				Type:         resolve(p.Type.Name),
+				DefaultValue: p.DefaultValue,
+				IsVariadic:   p.IsVariadic,
+				IsReference:  p.IsReference,
+			})
+		}
+		parent.Children = append(parent.Children, ms)
+		idx.addSymbolWithSource(uri, ms, src)
+	}
 }
 
 func (idx *Index) Lookup(fqn string) *Symbol {
@@ -451,91 +445,6 @@ func (idx *Index) GetNamespaceMembers(ns string) []*Symbol {
 		}
 	}
 	return results
-}
-
-// RegisterBuiltins populates the index with PHP built-in symbols.
-func (idx *Index) RegisterBuiltins() {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	builtins := []struct {
-		Name   string
-		Params []ParamInfo
-		Ret    string
-		Doc    string
-	}{
-		{"array_map", []ParamInfo{{Name: "$callback", Type: "?callable"}, {Name: "$array", Type: "array"}}, "array", "Applies callback to elements"},
-		{"array_filter", []ParamInfo{{Name: "$array", Type: "array"}, {Name: "$callback", Type: "?callable"}}, "array", "Filters elements using callback"},
-		{"array_reduce", []ParamInfo{{Name: "$array", Type: "array"}, {Name: "$callback", Type: "callable"}, {Name: "$initial", Type: "mixed"}}, "mixed", "Reduces array to single value"},
-		{"array_keys", []ParamInfo{{Name: "$array", Type: "array"}}, "array", "Return all keys of an array"},
-		{"array_values", []ParamInfo{{Name: "$array", Type: "array"}}, "array", "Return all values of an array"},
-		{"array_merge", []ParamInfo{{Name: "$arrays", Type: "array", IsVariadic: true}}, "array", "Merge arrays"},
-		{"array_push", []ParamInfo{{Name: "$array", Type: "array", IsReference: true}, {Name: "$values", Type: "mixed", IsVariadic: true}}, "int", "Push onto end of array"},
-		{"array_pop", []ParamInfo{{Name: "$array", Type: "array", IsReference: true}}, "mixed", "Pop last element"},
-		{"array_unique", []ParamInfo{{Name: "$array", Type: "array"}}, "array", "Remove duplicates"},
-		{"array_search", []ParamInfo{{Name: "$needle", Type: "mixed"}, {Name: "$haystack", Type: "array"}}, "int|string|false", "Search for value"},
-		{"in_array", []ParamInfo{{Name: "$needle", Type: "mixed"}, {Name: "$haystack", Type: "array"}}, "bool", "Check if value exists in array"},
-		{"count", []ParamInfo{{Name: "$value", Type: "Countable|array"}}, "int", "Count elements"},
-		{"isset", []ParamInfo{{Name: "$var", Type: "mixed"}}, "bool", "Check if variable is set"},
-		{"empty", []ParamInfo{{Name: "$var", Type: "mixed"}}, "bool", "Check if variable is empty"},
-		{"strlen", []ParamInfo{{Name: "$string", Type: "string"}}, "int", "Get string length"},
-		{"str_contains", []ParamInfo{{Name: "$haystack", Type: "string"}, {Name: "$needle", Type: "string"}}, "bool", "Check if string contains substring"},
-		{"str_starts_with", []ParamInfo{{Name: "$haystack", Type: "string"}, {Name: "$needle", Type: "string"}}, "bool", "Check if string starts with"},
-		{"str_ends_with", []ParamInfo{{Name: "$haystack", Type: "string"}, {Name: "$needle", Type: "string"}}, "bool", "Check if string ends with"},
-		{"substr", []ParamInfo{{Name: "$string", Type: "string"}, {Name: "$offset", Type: "int"}}, "string", "Return part of string"},
-		{"strpos", []ParamInfo{{Name: "$haystack", Type: "string"}, {Name: "$needle", Type: "string"}}, "int|false", "Find position of substring"},
-		{"str_replace", []ParamInfo{{Name: "$search", Type: "string|array"}, {Name: "$replace", Type: "string|array"}, {Name: "$subject", Type: "string|array"}}, "string|array", "Replace occurrences"},
-		{"explode", []ParamInfo{{Name: "$separator", Type: "string"}, {Name: "$string", Type: "string"}}, "array", "Split string by separator"},
-		{"implode", []ParamInfo{{Name: "$separator", Type: "string"}, {Name: "$array", Type: "array"}}, "string", "Join array elements"},
-		{"sprintf", []ParamInfo{{Name: "$format", Type: "string"}, {Name: "$values", Type: "mixed", IsVariadic: true}}, "string", "Return formatted string"},
-		{"json_encode", []ParamInfo{{Name: "$value", Type: "mixed"}}, "string|false", "JSON encode a value"},
-		{"json_decode", []ParamInfo{{Name: "$json", Type: "string"}, {Name: "$associative", Type: "?bool"}}, "mixed", "Decode JSON string"},
-		{"file_get_contents", []ParamInfo{{Name: "$filename", Type: "string"}}, "string|false", "Read entire file"},
-		{"file_put_contents", []ParamInfo{{Name: "$filename", Type: "string"}, {Name: "$data", Type: "mixed"}}, "int|false", "Write data to file"},
-		{"file_exists", []ParamInfo{{Name: "$filename", Type: "string"}}, "bool", "Check if file exists"},
-		{"var_dump", []ParamInfo{{Name: "$value", Type: "mixed", IsVariadic: true}}, "void", "Dump variable info"},
-		{"print_r", []ParamInfo{{Name: "$value", Type: "mixed"}, {Name: "$return", Type: "bool"}}, "string|true", "Print human-readable info"},
-		{"class_exists", []ParamInfo{{Name: "$class", Type: "string"}}, "bool", "Check if class is defined"},
-		{"preg_match", []ParamInfo{{Name: "$pattern", Type: "string"}, {Name: "$subject", Type: "string"}, {Name: "$matches", Type: "array", IsReference: true}}, "int|false", "Perform regex match"},
-		{"abs", []ParamInfo{{Name: "$num", Type: "int|float"}}, "int|float", "Absolute value"},
-		{"round", []ParamInfo{{Name: "$num", Type: "int|float"}, {Name: "$precision", Type: "int"}}, "float", "Round a float"},
-		{"max", []ParamInfo{{Name: "$value", Type: "mixed", IsVariadic: true}}, "mixed", "Find highest value"},
-		{"min", []ParamInfo{{Name: "$value", Type: "mixed", IsVariadic: true}}, "mixed", "Find lowest value"},
-		{"time", nil, "int", "Return current Unix timestamp"},
-		{"date", []ParamInfo{{Name: "$format", Type: "string"}, {Name: "$timestamp", Type: "?int"}}, "string", "Format a local time/date"},
-		{"is_string", []ParamInfo{{Name: "$value", Type: "mixed"}}, "bool", "Check if type is string"},
-		{"is_int", []ParamInfo{{Name: "$value", Type: "mixed"}}, "bool", "Check if type is int"},
-		{"is_array", []ParamInfo{{Name: "$value", Type: "mixed"}}, "bool", "Check if type is array"},
-		{"is_null", []ParamInfo{{Name: "$value", Type: "mixed"}}, "bool", "Check if variable is null"},
-		{"intval", []ParamInfo{{Name: "$value", Type: "mixed"}}, "int", "Get integer value"},
-		{"strval", []ParamInfo{{Name: "$value", Type: "mixed"}}, "string", "Get string value"},
-		{"trim", []ParamInfo{{Name: "$string", Type: "string"}}, "string", "Strip whitespace"},
-		{"strtolower", []ParamInfo{{Name: "$string", Type: "string"}}, "string", "Make lowercase"},
-		{"strtoupper", []ParamInfo{{Name: "$string", Type: "string"}}, "string", "Make uppercase"},
-	}
-
-	for _, fn := range builtins {
-		sym := &Symbol{Name: fn.Name, FQN: fn.Name, Kind: KindFunction, Source: SourceBuiltin, URI: "builtin", ReturnType: fn.Ret, DocComment: fn.Doc, Params: fn.Params}
-		idx.symbols[sym.FQN] = sym
-		idx.nameIndex[sym.Name] = appendUnique(idx.nameIndex[sym.Name], sym.FQN)
-	}
-
-	builtinClasses := []struct{ Name, Doc string }{
-		{"stdClass", "Generic empty class"},
-		{"Exception", "Base class for all exceptions"},
-		{"DateTime", "Representation of date and time"},
-		{"DateTimeImmutable", "Immutable date and time"},
-		{"Fiber", "Full-stack interruptible functions (PHP 8.1+)"},
-		{"WeakMap", "Maps objects as keys to arbitrary values"},
-		{"Generator", "Generator objects returned from generators"},
-		{"Closure", "Class used to represent anonymous functions"},
-		{"ArrayObject", "Allows objects to work as arrays"},
-	}
-	for _, cls := range builtinClasses {
-		sym := &Symbol{Name: cls.Name, FQN: cls.Name, Kind: KindClass, Source: SourceBuiltin, URI: "builtin", DocComment: cls.Doc}
-		idx.symbols[sym.FQN] = sym
-		idx.nameIndex[sym.Name] = appendUnique(idx.nameIndex[sym.Name], sym.FQN)
-	}
 }
 
 func symRange(line, col, nameLen int) protocol.Range {
