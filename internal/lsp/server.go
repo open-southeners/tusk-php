@@ -442,6 +442,19 @@ func (s *Server) handleExecuteCommand(msg *jsonRPCMessage) {
 			}
 		}
 		s.sendResponse(msg.ID, nil)
+	case "phpLsp.namespaceForPath":
+		// Returns the expected namespace for a file path based on PSR-4 autoload
+		if len(params.Arguments) > 0 {
+			var uri string
+			if json.Unmarshal(params.Arguments[0], &uri) == nil {
+				filePath := strings.TrimPrefix(uri, "file://")
+				autoload := composer.GetAutoloadPaths(s.rootPath)
+				ns := composer.PathToNamespace(filePath, autoload)
+				s.sendResponse(msg.ID, ns)
+				return
+			}
+		}
+		s.sendResponse(msg.ID, nil)
 	case "phpLsp.moveToNamespace":
 		// Arguments: [uri, targetNamespace]
 		if len(params.Arguments) >= 2 {
