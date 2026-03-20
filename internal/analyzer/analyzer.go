@@ -5,21 +5,22 @@ import (
 	"os"
 	"strings"
 
-	"github.com/open-southeners/php-lsp/internal/completion"
 	"github.com/open-southeners/php-lsp/internal/composer"
 	"github.com/open-southeners/php-lsp/internal/container"
 	"github.com/open-southeners/php-lsp/internal/parser"
 	"github.com/open-southeners/php-lsp/internal/protocol"
+	"github.com/open-southeners/php-lsp/internal/resolve"
 	"github.com/open-southeners/php-lsp/internal/symbols"
 )
 
 type Analyzer struct {
 	index     *symbols.Index
 	container *container.ContainerAnalyzer
+	resolver  *resolve.Resolver
 }
 
 func NewAnalyzer(index *symbols.Index, ca *container.ContainerAnalyzer) *Analyzer {
-	return &Analyzer{index: index, container: ca}
+	return &Analyzer{index: index, container: ca, resolver: resolve.NewResolver(index)}
 }
 
 func (a *Analyzer) FindDefinition(uri, source string, pos protocol.Position) *protocol.Location {
@@ -28,7 +29,7 @@ func (a *Analyzer) FindDefinition(uri, source string, pos protocol.Position) *pr
 		return nil
 	}
 	line := lines[pos.Line]
-	word := getWordAt(source, pos)
+	word := resolve.GetWordAt(source, pos)
 	if word == "" {
 		return nil
 	}
@@ -50,13 +51,13 @@ func (a *Analyzer) FindDefinition(uri, source string, pos protocol.Position) *pr
 
 	// Find the start of the word on the line
 	wordStart := pos.Character
-	for wordStart > 0 && isWordChar(line[wordStart-1]) {
+	for wordStart > 0 && resolve.IsWordChar(line[wordStart-1]) {
 		wordStart--
 	}
 
 	// Check for -> or :: access (method/property on a class)
 	if classFQN := a.resolveAccessChain(line, wordStart, file, source, pos); classFQN != "" {
-		if sym := a.findMember(classFQN, word); sym != nil {
+		if sym := a.resolver.FindMember(classFQN, word); sym != nil {
 			return symbolLocation(sym)
 		}
 	}
@@ -71,7 +72,7 @@ func (a *Analyzer) FindDefinition(uri, source string, pos protocol.Position) *pr
 			}
 		}
 		// Try as class name in current namespace
-		fqn := a.resolveClassName(word, file)
+		fqn := a.resolver.ResolveClassName(word, file)
 		if fqn != word {
 			if sym := a.index.Lookup(fqn); sym != nil {
 				return symbolLocation(sym)
@@ -162,7 +163,7 @@ func (a *Analyzer) definitionForContainerArg(line string, pos protocol.Position,
 	// Handle ::class suffix
 	if strings.HasSuffix(arg, "::class") {
 		className := strings.TrimSuffix(arg, "::class")
-		arg = a.resolveClassName(className, file)
+		arg = a.resolver.ResolveClassName(className, file)
 	}
 
 	// Resolve via container bindings
@@ -229,7 +230,7 @@ func (a *Analyzer) resolveAccessChain(line string, wordStart int, file *parser.F
 	}
 
 	end := i
-	for i > 0 && isWordChar(line[i-1]) {
+	for i > 0 && resolve.IsWordChar(line[i-1]) {
 		i--
 	}
 	if i > 0 && line[i-1] == '$' {
@@ -246,9 +247,9 @@ func (a *Analyzer) resolveAccessChain(line string, wordStart int, file *parser.F
 
 	switch target {
 	case "$this", "self", "static":
-		return a.findEnclosingClass(file, pos)
+		return resolve.FindEnclosingClass(file, pos)
 	case "parent":
-		classFQN := a.findEnclosingClass(file, pos)
+		classFQN := resolve.FindEnclosingClass(file, pos)
 		if classFQN == "" {
 			return ""
 		}
@@ -264,7 +265,7 @@ func (a *Analyzer) resolveAccessChain(line string, wordStart int, file *parser.F
 	}
 
 	// Try as a class name (for static access like Logger::create)
-	if fqn := a.resolveClassName(target, file); fqn != "" {
+	if fqn := a.resolver.ResolveClassName(target, file); fqn != "" {
 		if a.index.Lookup(fqn) != nil {
 			return fqn
 		}
@@ -275,21 +276,21 @@ func (a *Analyzer) resolveAccessChain(line string, wordStart int, file *parser.F
 	if ownerFQN == "" {
 		return ""
 	}
-	member := a.findMember(ownerFQN, target)
+	member := a.resolver.FindMember(ownerFQN, target)
 	if member == nil {
 		return ""
 	}
-	return a.memberType(member, file)
+	return a.resolver.MemberType(member, file)
 }
 
 // resolveVariableType infers the type of a variable from context.
 func (a *Analyzer) resolveVariableType(varName string, file *parser.FileNode, source string, pos protocol.Position) string {
 	// Check enclosing method parameters
-	enclosingMethod := a.findEnclosingMethod(file, pos)
+	enclosingMethod := resolve.FindEnclosingMethod(file, pos)
 	if enclosingMethod != nil {
 		for _, param := range enclosingMethod.Params {
 			if param.Name == varName {
-				return a.resolveClassName(param.Type.Name, file)
+				return a.resolver.ResolveClassName(param.Type.Name, file)
 			}
 		}
 	}
@@ -298,7 +299,7 @@ func (a *Analyzer) resolveVariableType(varName string, file *parser.FileNode, so
 	for _, cls := range file.Classes {
 		for _, prop := range cls.Properties {
 			if "$"+prop.Name == varName && prop.Type.Name != "" {
-				return a.resolveClassName(prop.Type.Name, file)
+				return a.resolver.ResolveClassName(prop.Type.Name, file)
 			}
 		}
 	}
@@ -329,7 +330,7 @@ func (a *Analyzer) resolveVariableType(varName string, file *parser.FileNode, so
 			className = strings.TrimSuffix(className, ";")
 			className = strings.TrimSpace(className)
 			if className != "" {
-				return a.resolveClassName(className, file)
+				return a.resolver.ResolveClassName(className, file)
 			}
 		}
 	}
@@ -347,121 +348,23 @@ func (a *Analyzer) resolveVariableType(varName string, file *parser.FileNode, so
 		rest := strings.TrimSpace(line[varIdx+5:])
 		fields := strings.Fields(rest)
 		if len(fields) >= 2 && fields[1] == varPrefix {
-			return a.resolveClassName(fields[0], file)
+			return a.resolver.ResolveClassName(fields[0], file)
 		}
 	}
 
 	return ""
-}
-
-func (a *Analyzer) findEnclosingClass(file *parser.FileNode, pos protocol.Position) string {
-	for _, cls := range file.Classes {
-		if pos.Line >= cls.StartLine {
-			fqn := cls.FullName
-			if fqn == "" {
-				fqn = buildFQN(file.Namespace, cls.Name)
-			}
-			return fqn
-		}
-	}
-	return ""
-}
-
-func (a *Analyzer) findEnclosingMethod(file *parser.FileNode, pos protocol.Position) *parser.MethodNode {
-	if file == nil {
-		return nil
-	}
-	for ci := len(file.Classes) - 1; ci >= 0; ci-- {
-		cls := file.Classes[ci]
-		if pos.Line < cls.StartLine {
-			continue
-		}
-		var best *parser.MethodNode
-		for mi := range cls.Methods {
-			m := &cls.Methods[mi]
-			if pos.Line >= m.StartLine {
-				if best == nil || m.StartLine > best.StartLine {
-					best = m
-				}
-			}
-		}
-		if best != nil {
-			return best
-		}
-	}
-	return nil
-}
-
-func (a *Analyzer) resolveClassName(name string, file *parser.FileNode) string {
-	if name == "" {
-		return ""
-	}
-	if file == nil {
-		return name
-	}
-	if strings.HasPrefix(name, "\\") {
-		return strings.TrimPrefix(name, "\\")
-	}
-	if strings.HasPrefix(name, "?") {
-		name = name[1:]
-	}
-	parts := strings.SplitN(name, "\\", 2)
-	for _, u := range file.Uses {
-		if u.Alias == parts[0] {
-			if len(parts) > 1 {
-				return u.FullName + "\\" + parts[1]
-			}
-			return u.FullName
-		}
-	}
-	if file.Namespace != "" {
-		fqn := file.Namespace + "\\" + name
-		if a.index.Lookup(fqn) != nil {
-			return fqn
-		}
-	}
-	return name
-}
-
-func (a *Analyzer) findMember(classFQN, memberName string) *symbols.Symbol {
-	members := a.index.GetClassMembers(classFQN)
-	for _, m := range members {
-		if m.Name == memberName || m.Name == "$"+memberName {
-			return m
-		}
-	}
-	return nil
-}
-
-func (a *Analyzer) memberType(member *symbols.Symbol, file *parser.FileNode) string {
-	var typeName string
-	switch member.Kind {
-	case symbols.KindProperty:
-		typeName = member.Type
-	case symbols.KindMethod:
-		typeName = member.ReturnType
-	default:
-		return ""
-	}
-	if typeName == "" || typeName == "void" || typeName == "mixed" {
-		return ""
-	}
-	if typeName == "self" || typeName == "static" {
-		return member.ParentFQN
-	}
-	return a.resolveClassName(typeName, file)
 }
 
 // resolveContainerCallType resolves a container call expression to a concrete FQN.
-// Uses the shared ExtractContainerCallArg helper from the completion package.
+// Uses the shared ExtractContainerCallArg helper from the resolve package.
 func (a *Analyzer) resolveContainerCallType(expr string, file *parser.FileNode, source string) string {
-	arg := completion.ExtractContainerCallArg(expr)
+	arg := resolve.ExtractContainerCallArg(expr)
 	if arg == "" {
 		return ""
 	}
 	if strings.HasSuffix(arg, "::class") {
 		className := strings.TrimSuffix(arg, "::class")
-		arg = a.resolveClassName(className, file)
+		arg = a.resolver.ResolveClassName(className, file)
 	}
 	if binding := a.container.ResolveDependency(arg); binding != nil {
 		return binding.Concrete
@@ -477,13 +380,6 @@ func symbolLocation(sym *symbols.Symbol) *protocol.Location {
 		return nil
 	}
 	return &protocol.Location{URI: sym.URI, Range: sym.Range}
-}
-
-func buildFQN(namespace, name string) string {
-	if namespace == "" {
-		return name
-	}
-	return namespace + "\\" + name
 }
 
 func (a *Analyzer) FindReferences(uri, source string, pos protocol.Position) []protocol.Location {
@@ -531,7 +427,7 @@ func (a *Analyzer) resolveSymbolAtCursor(uri, source string, pos protocol.Positi
 	if pos.Line >= 0 && pos.Line < len(lines) {
 		line := lines[pos.Line]
 		wordStart := pos.Character
-		for wordStart > 0 && isWordChar(line[wordStart-1]) {
+		for wordStart > 0 && resolve.IsWordChar(line[wordStart-1]) {
 			wordStart--
 		}
 		if wordStart > 0 && line[wordStart-1] == '$' {
@@ -543,7 +439,7 @@ func (a *Analyzer) resolveSymbolAtCursor(uri, source string, pos protocol.Positi
 			if strings.HasSuffix(trimmed, "->") || strings.HasSuffix(trimmed, "::") {
 				classFQN := a.resolveAccessChain(line, wordStart, file, source, pos)
 				if classFQN != "" {
-					if member := a.findMember(classFQN, word); member != nil {
+					if member := a.resolver.FindMember(classFQN, word); member != nil {
 						return member
 					}
 				}
@@ -554,7 +450,7 @@ func (a *Analyzer) resolveSymbolAtCursor(uri, source string, pos protocol.Positi
 	// Check if it's a class property declaration ($name on a property line)
 	if strings.HasPrefix(word, "$") && file != nil {
 		bare := strings.TrimPrefix(word, "$")
-		classFQN := a.findEnclosingClass(file, pos)
+		classFQN := resolve.FindEnclosingClass(file, pos)
 		if classFQN != "" {
 			propFQN := classFQN + "::" + bare
 			if sym := a.index.Lookup(propFQN); sym != nil {
@@ -571,7 +467,7 @@ func (a *Analyzer) resolveSymbolAtCursor(uri, source string, pos protocol.Positi
 	// Try resolving as a class/interface/enum/trait name
 	fqn := ""
 	if file != nil {
-		fqn = a.resolveClassName(word, file)
+		fqn = a.resolver.ResolveClassName(word, file)
 	}
 	if fqn != "" {
 		if sym := a.index.Lookup(fqn); sym != nil {
@@ -651,7 +547,7 @@ func (a *Analyzer) findVariableReferences(uri, source string, pos protocol.Posit
 		return nil
 	}
 
-	method := a.findEnclosingMethod(file, pos)
+	method := resolve.FindEnclosingMethod(file, pos)
 	lines := strings.Split(source, "\n")
 	scopeStart := 0
 	scopeEnd := len(lines)
@@ -685,7 +581,7 @@ func (a *Analyzer) findVariableReferences(uri, source string, pos protocol.Posit
 			}
 			col := offset + idx
 			end := col + len(varName)
-			if end < len(line) && isWordChar(line[end]) {
+			if end < len(line) && resolve.IsWordChar(line[end]) {
 				offset = end
 				continue
 			}
@@ -714,12 +610,12 @@ func findWordLocations(uri, line string, lineNum int, word string) []protocol.Lo
 		col := offset + idx
 		end := col + len(word)
 		// Word boundary before
-		if col > 0 && (isWordChar(line[col-1]) || line[col-1] == '$') {
+		if col > 0 && (resolve.IsWordChar(line[col-1]) || line[col-1] == '$') {
 			offset = end
 			continue
 		}
 		// Word boundary after
-		if end < len(line) && isWordChar(line[end]) {
+		if end < len(line) && resolve.IsWordChar(line[end]) {
 			offset = end
 			continue
 		}
@@ -747,7 +643,7 @@ func findAccessLocations(uri, line string, lineNum int, needle string, skipChars
 		}
 		col := offset + idx + skipChars
 		end := col + len(identName)
-		if end < len(line) && isWordChar(line[end]) {
+		if end < len(line) && resolve.IsWordChar(line[end]) {
 			offset = end
 			continue
 		}
@@ -841,7 +737,7 @@ func (a *Analyzer) GetDocumentSymbols(uri, source string) []protocol.DocumentSym
 }
 
 func (a *Analyzer) GetSignatureHelp(uri, source string, pos protocol.Position) *protocol.SignatureHelp {
-	line := getLineAt(source, pos.Line)
+	line := resolve.GetLineAt(source, pos.Line)
 	if line == "" {
 		return nil
 	}
@@ -897,7 +793,7 @@ found:
 	}
 	end := parenPos
 	start := end - 1
-	for start >= 0 && isWordChar(prefix[start]) {
+	for start >= 0 && resolve.IsWordChar(prefix[start]) {
 		start--
 	}
 	start++
@@ -928,57 +824,6 @@ func mkRange(line int) protocol.Range {
 	return protocol.Range{Start: protocol.Position{Line: line}, End: protocol.Position{Line: line}}
 }
 
-func getLineAt(source string, line int) string {
-	lines := strings.Split(source, "\n")
-	if line >= 0 && line < len(lines) {
-		return lines[line]
-	}
-	return ""
-}
-
-func getWordAt(source string, pos protocol.Position) string {
-	lines := strings.Split(source, "\n")
-	if pos.Line < 0 || pos.Line >= len(lines) {
-		return ""
-	}
-	line := lines[pos.Line]
-	if pos.Character > len(line) {
-		return ""
-	}
-	// Handle cursor on '$'
-	ch := pos.Character
-	if ch < len(line) && line[ch] == '$' {
-		start := ch
-		end := ch + 1
-		for end < len(line) && isWordChar(line[end]) {
-			end++
-		}
-		if end > start+1 {
-			return line[start:end]
-		}
-		return ""
-	}
-	start := pos.Character
-	for start > 0 && isWordChar(line[start-1]) {
-		start--
-	}
-	if start > 0 && line[start-1] == '$' {
-		start--
-	}
-	end := pos.Character
-	for end < len(line) && isWordChar(line[end]) {
-		end++
-	}
-	if start >= end {
-		return ""
-	}
-	return line[start:end]
-}
-
-func isWordChar(ch byte) bool {
-	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '\\'
-}
-
 // --- Rename support ---
 
 // getWordRangeAt returns the word at the cursor and its exact range in the document.
@@ -997,7 +842,7 @@ func getWordRangeAt(source string, pos protocol.Position) (string, protocol.Rang
 	if ch < len(line) && line[ch] == '$' {
 		start := ch
 		end := ch + 1
-		for end < len(line) && isWordChar(line[end]) {
+		for end < len(line) && resolve.IsWordChar(line[end]) {
 			end++
 		}
 		if end > start+1 {
@@ -1010,7 +855,7 @@ func getWordRangeAt(source string, pos protocol.Position) (string, protocol.Rang
 	}
 
 	start := pos.Character
-	for start > 0 && isWordChar(line[start-1]) {
+	for start > 0 && resolve.IsWordChar(line[start-1]) {
 		start--
 	}
 	hasDollar := start > 0 && line[start-1] == '$'
@@ -1018,7 +863,7 @@ func getWordRangeAt(source string, pos protocol.Position) (string, protocol.Rang
 		start--
 	}
 	end := pos.Character
-	for end < len(line) && isWordChar(line[end]) {
+	for end < len(line) && resolve.IsWordChar(line[end]) {
 		end++
 	}
 	if start >= end {
@@ -1152,7 +997,7 @@ func (a *Analyzer) renameVariable(uri, source string, pos protocol.Position, old
 	}
 
 	// Find enclosing method/function scope
-	method := a.findEnclosingMethod(file, pos)
+	method := resolve.FindEnclosingMethod(file, pos)
 	scopeStart := 0
 	lines := strings.Split(source, "\n")
 	scopeEnd := len(lines)
@@ -1190,7 +1035,7 @@ func (a *Analyzer) renameVariable(uri, source string, pos protocol.Position, old
 			col := offset + idx
 			end := col + len(oldName)
 			// Ensure it's a complete token (not part of a longer identifier)
-			if end < len(line) && isWordChar(line[end]) {
+			if end < len(line) && resolve.IsWordChar(line[end]) {
 				offset = end
 				continue
 			}
@@ -1264,12 +1109,12 @@ func findWordEdits(line string, lineNum int, oldWord, newWord string) []protocol
 		col := offset + idx
 		end := col + len(oldWord)
 		// Check word boundary before
-		if col > 0 && (isWordChar(line[col-1]) || line[col-1] == '$') {
+		if col > 0 && (resolve.IsWordChar(line[col-1]) || line[col-1] == '$') {
 			offset = end
 			continue
 		}
 		// Check word boundary after
-		if end < len(line) && isWordChar(line[end]) {
+		if end < len(line) && resolve.IsWordChar(line[end]) {
 			offset = end
 			continue
 		}
@@ -1586,7 +1431,7 @@ func (a *Analyzer) MoveToNamespace(uri, source, targetNS string, autoloadEntries
 				}
 				col := offset + idx
 				end := col + len(fqnWithSlash)
-				if end < len(line) && isWordChar(line[end]) {
+				if end < len(line) && resolve.IsWordChar(line[end]) {
 					offset = end
 					continue
 				}
@@ -1611,12 +1456,12 @@ func (a *Analyzer) MoveToNamespace(uri, source, targetNS string, autoloadEntries
 					col := offset + idx
 					end := col + len(pr.oldRef)
 					// Word boundary check before (should not be preceded by another word char)
-					if col > 0 && isWordChar(line[col-1]) {
+					if col > 0 && resolve.IsWordChar(line[col-1]) {
 						offset = end
 						continue
 					}
 					// Word boundary check after
-					if end < len(line) && isWordChar(line[end]) {
+					if end < len(line) && resolve.IsWordChar(line[end]) {
 						offset = end
 						continue
 					}

@@ -8,6 +8,7 @@ import (
 	"github.com/open-southeners/php-lsp/internal/models"
 	"github.com/open-southeners/php-lsp/internal/parser"
 	"github.com/open-southeners/php-lsp/internal/phparray"
+	"github.com/open-southeners/php-lsp/internal/resolve"
 	"github.com/open-southeners/php-lsp/internal/protocol"
 	"github.com/open-southeners/php-lsp/internal/symbols"
 	"github.com/open-southeners/php-lsp/internal/types"
@@ -30,7 +31,7 @@ func (p *Provider) SetArrayResolver(resolver *models.FrameworkArrayResolver) {
 }
 
 func (p *Provider) GetCompletions(uri, source string, pos protocol.Position) []protocol.CompletionItem {
-	line := getLineAt(source, pos.Line)
+	line := resolve.GetLineAt(source, pos.Line)
 	prefix := ""
 	if pos.Character <= len(line) {
 		prefix = line[:pos.Character]
@@ -102,7 +103,7 @@ func (p *Provider) GetCompletions(uri, source string, pos protocol.Position) []p
 	}
 	if lastWord == "" || strings.HasPrefix("$this", strings.ToLower(lastWord)) {
 		if file := parser.ParseFile(source); file != nil {
-			if findEnclosingClass(file, pos) != "" {
+			if resolve.FindEnclosingClass(file, pos) != "" {
 				items = append(items, protocol.CompletionItem{
 					Label:    "$this",
 					Kind:     protocol.CompletionItemKindVariable,
@@ -217,12 +218,12 @@ func (p *Provider) resolveChainType(source, prefix, op string, pos protocol.Posi
 	switch target {
 	case "$this", "self", "static":
 		if file != nil {
-			return findEnclosingClass(file, pos)
+			return resolve.FindEnclosingClass(file, pos)
 		}
 		return ""
 	case "parent":
 		if file != nil {
-			classFQN := findEnclosingClass(file, pos)
+			classFQN := resolve.FindEnclosingClass(file, pos)
 			if classFQN != "" {
 				chain := p.index.GetInheritanceChain(classFQN)
 				if len(chain) > 0 {
@@ -279,52 +280,10 @@ func (p *Provider) resolveContainerCallType(expr, source string) string {
 	return ""
 }
 
-// ExtractContainerCallArg extracts the string/class argument from a container
-// resolution expression like app('request'), app(Request::class), resolve('cache').
-// Returns the cleaned argument or empty string if not a container call.
+// ExtractContainerCallArg is a backward-compatible wrapper for resolve.ExtractContainerCallArg.
+// Deprecated: use resolve.ExtractContainerCallArg directly.
 func ExtractContainerCallArg(expr string) string {
-	t := strings.TrimSpace(expr)
-	// Must end with closing paren
-	if !strings.HasSuffix(t, ")") {
-		return ""
-	}
-	// Find the matching open paren
-	depth := 0
-	openIdx := -1
-	for i := len(t) - 1; i >= 0; i-- {
-		if t[i] == ')' {
-			depth++
-		} else if t[i] == '(' {
-			depth--
-			if depth == 0 {
-				openIdx = i
-				break
-			}
-		}
-	}
-	if openIdx < 0 {
-		return ""
-	}
-	// Check the function name before the paren
-	funcPart := strings.TrimSpace(t[:openIdx])
-	isContainerCall := false
-	for _, suffix := range []string{"app", "resolve", "->get", "->make"} {
-		if strings.HasSuffix(funcPart, suffix) {
-			isContainerCall = true
-			break
-		}
-	}
-	if !isContainerCall {
-		return ""
-	}
-	// Extract and clean the argument
-	arg := strings.TrimSpace(t[openIdx+1 : len(t)-1])
-	// First arg only (before comma)
-	if commaIdx := strings.Index(arg, ","); commaIdx >= 0 {
-		arg = strings.TrimSpace(arg[:commaIdx])
-	}
-	arg = strings.Trim(arg, "'\"")
-	return arg
+	return resolve.ExtractContainerCallArg(expr)
 }
 
 // resolveClassNameFromSource resolves a short or FQN class name using
@@ -410,7 +369,7 @@ func extractTrailingToken(s string) string {
 	}
 	// Extract the word
 	end := i
-	for i > 0 && isCompletionWordChar(s[i-1]) {
+	for i > 0 && resolve.IsWordChar(s[i-1]) {
 		i--
 	}
 	if i > 0 && s[i-1] == '$' {
@@ -478,24 +437,7 @@ func parenBalanced(s string) bool {
 	return depth == 0
 }
 
-func isCompletionWordChar(ch byte) bool {
-	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '\\'
-}
 
-func findEnclosingClass(file *parser.FileNode, pos protocol.Position) string {
-	for _, cls := range file.Classes {
-		if pos.Line >= cls.StartLine {
-			if cls.FullName != "" {
-				return cls.FullName
-			}
-			if file.Namespace != "" {
-				return file.Namespace + "\\" + cls.Name
-			}
-			return cls.Name
-		}
-	}
-	return ""
-}
 
 func (p *Provider) completeNew(prefix, currentNS string) []protocol.CompletionItem {
 	var items []protocol.CompletionItem
@@ -690,7 +632,7 @@ func parseArrayKeyContext(prefix string) *arrayKeyContext {
 
 	// Step 5: extract $variable name
 	end := i + 1
-	for i >= 0 && isCompletionWordChar(prefix[i]) {
+	for i >= 0 && resolve.IsWordChar(prefix[i]) {
 		i--
 	}
 	if i >= 0 && prefix[i] == '$' {
@@ -1211,7 +1153,7 @@ func parseConfigResultArrayContext(prefix string) *configResultArrayContext {
 		i--
 	}
 	end := i + 1
-	for i >= 0 && isCompletionWordChar(prefix[i]) {
+	for i >= 0 && resolve.IsWordChar(prefix[i]) {
 		i--
 	}
 	funcName := prefix[i+1 : end]
@@ -1891,14 +1833,6 @@ func extractNamespace(source string) string {
 			ns = strings.TrimSuffix(ns, " {")
 			return strings.TrimSpace(ns)
 		}
-	}
-	return ""
-}
-
-func getLineAt(source string, line int) string {
-	lines := strings.Split(source, "\n")
-	if line >= 0 && line < len(lines) {
-		return lines[line]
 	}
 	return ""
 }

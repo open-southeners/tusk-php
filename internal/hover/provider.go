@@ -9,6 +9,7 @@ import (
 	"github.com/open-southeners/php-lsp/internal/parser"
 	"github.com/open-southeners/php-lsp/internal/phparray"
 	"github.com/open-southeners/php-lsp/internal/protocol"
+	"github.com/open-southeners/php-lsp/internal/resolve"
 	"github.com/open-southeners/php-lsp/internal/symbols"
 	"github.com/open-southeners/php-lsp/internal/types"
 )
@@ -16,12 +17,13 @@ import (
 type Provider struct {
 	index         *symbols.Index
 	container     *container.ContainerAnalyzer
+	resolver      *resolve.Resolver
 	framework     string
 	arrayResolver *models.FrameworkArrayResolver
 }
 
 func NewProvider(index *symbols.Index, ca *container.ContainerAnalyzer, framework string) *Provider {
-	return &Provider{index: index, container: ca, framework: framework}
+	return &Provider{index: index, container: ca, resolver: resolve.NewResolver(index), framework: framework}
 }
 
 // SetArrayResolver sets the framework array resolver for config hover.
@@ -46,7 +48,7 @@ func (p *Provider) GetHover(uri, source string, pos protocol.Position) *protocol
 		return hover
 	}
 
-	word := getWordAt(source, pos)
+	word := resolve.GetWordAt(source, pos)
 	if word == "" {
 		return nil
 	}
@@ -68,7 +70,7 @@ func (p *Provider) GetHover(uri, source string, pos protocol.Position) *protocol
 		if file != nil {
 			var classFQN string
 			if word == "parent" {
-				enclosing := p.findEnclosingClass(file, pos)
+				enclosing := resolve.FindEnclosingClass(file, pos)
 				if enclosing != "" {
 					chain := p.index.GetInheritanceChain(enclosing)
 					if len(chain) > 0 {
@@ -76,7 +78,7 @@ func (p *Provider) GetHover(uri, source string, pos protocol.Position) *protocol
 					}
 				}
 			} else {
-				classFQN = p.findEnclosingClass(file, pos)
+				classFQN = resolve.FindEnclosingClass(file, pos)
 			}
 			if classFQN != "" {
 				if sym := p.index.Lookup(classFQN); sym != nil {
@@ -91,13 +93,13 @@ func (p *Provider) GetHover(uri, source string, pos protocol.Position) *protocol
 
 	// Find the start position of the word on the line
 	wordStart := pos.Character
-	for wordStart > 0 && isWordChar(line[wordStart-1]) {
+	for wordStart > 0 && resolve.IsWordChar(line[wordStart-1]) {
 		wordStart--
 	}
 
 	// Check for -> or :: access context
 	if classFQN := p.resolveAccessChain(line, wordStart, file, source, pos); classFQN != "" {
-		if sym := p.findMember(classFQN, word); sym != nil {
+		if sym := p.resolver.FindMember(classFQN, word); sym != nil {
 			content := p.formatHover(sym)
 			if content != "" {
 				return &protocol.Hover{Contents: protocol.MarkupContent{Kind: "markdown", Value: content}}
@@ -118,7 +120,7 @@ func (p *Provider) GetHover(uri, source string, pos protocol.Position) *protocol
 			}
 		}
 		// Try resolving as a class name in the current namespace context
-		fqn := p.resolveClassName(word, file)
+		fqn := p.resolver.ResolveClassName(word, file)
 		if fqn != word {
 			if sym := p.index.Lookup(fqn); sym != nil {
 				content := p.formatHover(sym)
@@ -216,7 +218,7 @@ func (p *Provider) resolveAccessChain(line string, wordStart int, file *parser.F
 
 	// Extract the target word
 	end := i
-	for i > 0 && isWordChar(line[i-1]) {
+	for i > 0 && resolve.IsWordChar(line[i-1]) {
 		i--
 	}
 	// Include $ for variables
@@ -235,9 +237,9 @@ func (p *Provider) resolveAccessChain(line string, wordStart int, file *parser.F
 	// Resolve the target to a class FQN
 	switch target {
 	case "$this", "self", "static":
-		return p.findEnclosingClass(file, pos)
+		return resolve.FindEnclosingClass(file, pos)
 	case "parent":
-		classFQN := p.findEnclosingClass(file, pos)
+		classFQN := resolve.FindEnclosingClass(file, pos)
 		if classFQN == "" {
 			return ""
 		}
@@ -257,7 +259,7 @@ func (p *Provider) resolveAccessChain(line string, wordStart int, file *parser.F
 	// Bare word target: could be a class name (for static access)
 	// or a chained property/method (e.g. the "logger" in "$this->logger->info")
 	// First, try as a class name
-	if fqn := p.resolveClassName(target, file); fqn != "" {
+	if fqn := p.resolver.ResolveClassName(target, file); fqn != "" {
 		if p.index.Lookup(fqn) != nil {
 			return fqn
 		}
@@ -269,56 +271,22 @@ func (p *Provider) resolveAccessChain(line string, wordStart int, file *parser.F
 	if ownerFQN == "" {
 		return ""
 	}
-	member := p.findMember(ownerFQN, target)
+	member := p.resolver.FindMember(ownerFQN, target)
 	if member == nil {
 		return ""
 	}
-	return p.memberType(member, file)
+	return p.resolver.MemberType(member, file)
 }
 
-// memberType returns the resolved FQN of the type that a member evaluates to.
-func (p *Provider) memberType(member *symbols.Symbol, file *parser.FileNode) string {
-	var typeName string
-	switch member.Kind {
-	case symbols.KindProperty:
-		typeName = member.Type
-	case symbols.KindMethod:
-		typeName = member.ReturnType
-	default:
-		return ""
-	}
-	if typeName == "" || typeName == "void" || typeName == "mixed" {
-		return ""
-	}
-	// Handle self/static return types
-	if typeName == "self" || typeName == "static" {
-		return member.ParentFQN
-	}
-	return p.resolveClassName(typeName, file)
-}
-
-// findEnclosingClass returns the FQN of the class that contains the given position.
-func (p *Provider) findEnclosingClass(file *parser.FileNode, pos protocol.Position) string {
-	for _, cls := range file.Classes {
-		if pos.Line >= cls.StartLine {
-			fqn := cls.FullName
-			if fqn == "" {
-				fqn = buildFQN(file.Namespace, cls.Name)
-			}
-			return fqn
-		}
-	}
-	return ""
-}
 
 // resolveVariableType tries to infer the type of a variable from context.
 func (p *Provider) resolveVariableType(varName string, file *parser.FileNode, source string, pos protocol.Position) string {
 	// 1. Check method/function parameter type hints in the enclosing scope
-	enclosingMethod := p.findEnclosingMethod(file, pos)
+	enclosingMethod := resolve.FindEnclosingMethod(file, pos)
 	if enclosingMethod != nil {
 		for _, param := range enclosingMethod.Params {
 			if param.Name == varName {
-				return p.resolveClassName(param.Type.Name, file)
+				return p.resolver.ResolveClassName(param.Type.Name, file)
 			}
 		}
 	}
@@ -328,7 +296,7 @@ func (p *Provider) resolveVariableType(varName string, file *parser.FileNode, so
 	for _, cls := range file.Classes {
 		for _, prop := range cls.Properties {
 			if "$"+prop.Name == varName && prop.Type.Name != "" {
-				return p.resolveClassName(prop.Type.Name, file)
+				return p.resolver.ResolveClassName(prop.Type.Name, file)
 			}
 		}
 	}
@@ -360,7 +328,7 @@ func (p *Provider) resolveVariableType(varName string, file *parser.FileNode, so
 			className = strings.TrimSuffix(className, ";")
 			className = strings.TrimSpace(className)
 			if className != "" {
-				return p.resolveClassName(className, file)
+				return p.resolver.ResolveClassName(className, file)
 			}
 		}
 		// $var = expr; — infer literal type
@@ -384,7 +352,7 @@ func (p *Provider) resolveVariableType(varName string, file *parser.FileNode, so
 		rest := strings.TrimSpace(line[varIdx+5:])
 		fields := strings.Fields(rest)
 		if len(fields) >= 2 && fields[1] == varPrefix {
-			return p.resolveClassName(fields[0], file)
+			return p.resolver.ResolveClassName(fields[0], file)
 		}
 	}
 
@@ -423,79 +391,7 @@ func inferLiteralType(expr string) string {
 	return ""
 }
 
-// findEnclosingMethod returns the method node that contains the given position.
-func (p *Provider) findEnclosingMethod(file *parser.FileNode, pos protocol.Position) *parser.MethodNode {
-	if file == nil {
-		return nil
-	}
-	for ci := len(file.Classes) - 1; ci >= 0; ci-- {
-		cls := file.Classes[ci]
-		if pos.Line < cls.StartLine {
-			continue
-		}
-		var best *parser.MethodNode
-		for mi := range cls.Methods {
-			m := &cls.Methods[mi]
-			if pos.Line >= m.StartLine {
-				if best == nil || m.StartLine > best.StartLine {
-					best = m
-				}
-			}
-		}
-		if best != nil {
-			return best
-		}
-	}
-	return nil
-}
 
-// resolveClassName resolves a short or partially-qualified class name to a FQN
-// using use statements and the file's namespace.
-func (p *Provider) resolveClassName(name string, file *parser.FileNode) string {
-	if name == "" {
-		return ""
-	}
-	if file == nil {
-		return name
-	}
-	// Already fully qualified
-	if strings.HasPrefix(name, "\\") {
-		return strings.TrimPrefix(name, "\\")
-	}
-	// Strip nullable
-	if strings.HasPrefix(name, "?") {
-		name = name[1:]
-	}
-
-	parts := strings.SplitN(name, "\\", 2)
-	for _, u := range file.Uses {
-		if u.Alias == parts[0] {
-			if len(parts) > 1 {
-				return u.FullName + "\\" + parts[1]
-			}
-			return u.FullName
-		}
-	}
-	if file.Namespace != "" {
-		fqn := file.Namespace + "\\" + name
-		if p.index.Lookup(fqn) != nil {
-			return fqn
-		}
-	}
-	return name
-}
-
-// findMember looks up a member (method, property, constant) on a class,
-// traversing the inheritance chain and traits.
-func (p *Provider) findMember(classFQN, memberName string) *symbols.Symbol {
-	members := p.index.GetClassMembers(classFQN)
-	for _, m := range members {
-		if m.Name == memberName || m.Name == "$"+memberName {
-			return m
-		}
-	}
-	return nil
-}
 
 func (p *Provider) hoverVariable(file *parser.FileNode, source string, pos protocol.Position, varName string) *protocol.Hover {
 	if file == nil {
@@ -870,56 +766,6 @@ func fmtParams(params []symbols.ParamInfo) string {
 	return "(" + strings.Join(parts, ", ") + ")"
 }
 
-func buildFQN(namespace, name string) string {
-	if namespace == "" {
-		return name
-	}
-	return namespace + "\\" + name
-}
-
-func getWordAt(source string, pos protocol.Position) string {
-	lines := strings.Split(source, "\n")
-	if pos.Line < 0 || pos.Line >= len(lines) {
-		return ""
-	}
-	line := lines[pos.Line]
-	if pos.Character > len(line) {
-		return ""
-	}
-	// If cursor is on '$', include it and scan forward from the next char
-	ch := pos.Character
-	if ch < len(line) && line[ch] == '$' {
-		start := ch
-		end := ch + 1
-		for end < len(line) && isWordChar(line[end]) {
-			end++
-		}
-		if end > start+1 {
-			return line[start:end]
-		}
-		return ""
-	}
-	start := pos.Character
-	for start > 0 && isWordChar(line[start-1]) {
-		start--
-	}
-	if start > 0 && line[start-1] == '$' {
-		start--
-	}
-	end := pos.Character
-	for end < len(line) && isWordChar(line[end]) {
-		end++
-	}
-	if start >= end {
-		return ""
-	}
-	return line[start:end]
-}
-
-func isWordChar(ch byte) bool {
-	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '\\'
-}
-
 // hoverArrayKeyContext holds the parsed context for hovering an array key.
 type hoverArrayKeyContext struct {
 	VarName    string   // e.g. "$config"
@@ -1024,7 +870,7 @@ func getArrayKeyContext(line string, character int) (*hoverArrayKeyContext, bool
 	}
 
 	end := i + 1
-	for i >= 0 && isWordChar(line[i]) {
+	for i >= 0 && resolve.IsWordChar(line[i]) {
 		i--
 	}
 	if i >= 0 && line[i] == '$' {
