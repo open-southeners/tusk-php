@@ -39,14 +39,14 @@ func (a *Analyzer) FindDefinition(uri, source string, pos protocol.Position) *pr
 	// Handle container call arguments: app('request'), app(Request::class)
 	// Go to the concrete class definition
 	if a.container != nil {
-		if loc := a.definitionForContainerArg(line, pos, file, source); loc != nil {
+		if loc := a.definitionForContainerArg(line, pos, source, file); loc != nil {
 			return loc
 		}
 	}
 
 	// Handle $variable → go to its type definition
 	if strings.HasPrefix(word, "$") {
-		return a.definitionForVariable(word, file, source, pos)
+		return a.definitionForVariable(word, source, pos, file)
 	}
 
 	// Find the start of the word on the line
@@ -56,7 +56,7 @@ func (a *Analyzer) FindDefinition(uri, source string, pos protocol.Position) *pr
 	}
 
 	// Check for -> or :: access (method/property on a class)
-	if classFQN := a.resolveAccessChain(line, wordStart, file, source, pos); classFQN != "" {
+	if classFQN := a.resolveAccessChain(line, wordStart, source, pos, file); classFQN != "" {
 		if sym := a.resolver.FindMember(classFQN, word); sym != nil {
 			return symbolLocation(sym)
 		}
@@ -102,11 +102,11 @@ func (a *Analyzer) FindDefinition(uri, source string, pos protocol.Position) *pr
 }
 
 // definitionForVariable resolves a $variable to its type's definition.
-func (a *Analyzer) definitionForVariable(varName string, file *parser.FileNode, source string, pos protocol.Position) *protocol.Location {
+func (a *Analyzer) definitionForVariable(varName string, source string, pos protocol.Position, file *parser.FileNode) *protocol.Location {
 	if file == nil {
 		return nil
 	}
-	typeName := a.resolver.ResolveVariableType(varName, file, source, pos)
+	typeName := a.resolver.ResolveVariableType(varName, source, pos, file)
 	if typeName == "" {
 		return nil
 	}
@@ -119,7 +119,7 @@ func (a *Analyzer) definitionForVariable(varName string, file *parser.FileNode, 
 // definitionForContainerArg checks if the cursor is inside a container resolution
 // call argument (e.g. app('request'), app(Request::class)) and returns the
 // definition of the concrete class.
-func (a *Analyzer) definitionForContainerArg(line string, pos protocol.Position, file *parser.FileNode, source string) *protocol.Location {
+func (a *Analyzer) definitionForContainerArg(line string, pos protocol.Position, source string, file *parser.FileNode) *protocol.Location {
 	prefix := line[:min(pos.Character, len(line))]
 	// Check if we're inside a container call
 	patterns := []string{"app(", "resolve(", "->get(", "->make("}
@@ -181,7 +181,7 @@ func (a *Analyzer) definitionForContainerArg(line string, pos protocol.Position,
 
 // resolveAccessChain walks left through -> and :: chains to return the FQN
 // of the class that owns the member at wordStart.
-func (a *Analyzer) resolveAccessChain(line string, wordStart int, file *parser.FileNode, source string, pos protocol.Position) string {
+func (a *Analyzer) resolveAccessChain(line string, wordStart int, source string, pos protocol.Position, file *parser.FileNode) string {
 	i := wordStart
 	for i > 0 && (line[i-1] == ' ' || line[i-1] == '\t') {
 		i--
@@ -219,7 +219,7 @@ func (a *Analyzer) resolveAccessChain(line string, wordStart int, file *parser.F
 		// Check if this is a container call: app(...), resolve(...)
 		if a.container != nil {
 			callExpr := strings.TrimSpace(line[:parenEnd])
-			if concrete := a.resolveContainerCallType(callExpr, file, source); concrete != "" {
+			if concrete := a.resolveContainerCallType(callExpr, source, file); concrete != "" {
 				return concrete
 			}
 		}
@@ -261,7 +261,7 @@ func (a *Analyzer) resolveAccessChain(line string, wordStart int, file *parser.F
 	}
 
 	if strings.HasPrefix(target, "$") {
-		return a.resolver.ResolveVariableType(target, file, source, pos)
+		return a.resolver.ResolveVariableType(target, source, pos, file)
 	}
 
 	// Try as a class name (for static access like Logger::create)
@@ -272,7 +272,7 @@ func (a *Analyzer) resolveAccessChain(line string, wordStart int, file *parser.F
 	}
 
 	// Recursive chain resolution
-	ownerFQN := a.resolveAccessChain(line, i, file, source, pos)
+	ownerFQN := a.resolveAccessChain(line, i, source, pos, file)
 	if ownerFQN == "" {
 		return ""
 	}
@@ -285,7 +285,7 @@ func (a *Analyzer) resolveAccessChain(line string, wordStart int, file *parser.F
 
 // resolveContainerCallType resolves a container call expression to a concrete FQN.
 // Uses the shared ExtractContainerCallArg helper from the resolve package.
-func (a *Analyzer) resolveContainerCallType(expr string, file *parser.FileNode, source string) string {
+func (a *Analyzer) resolveContainerCallType(expr string, source string, file *parser.FileNode) string {
 	arg := resolve.ExtractContainerCallArg(expr)
 	if arg == "" {
 		return ""
@@ -365,7 +365,7 @@ func (a *Analyzer) resolveSymbolAtCursor(uri, source string, pos protocol.Positi
 			before := line[:wordStart]
 			trimmed := strings.TrimRight(before, " \t")
 			if strings.HasSuffix(trimmed, "->") || strings.HasSuffix(trimmed, "::") {
-				classFQN := a.resolveAccessChain(line, wordStart, file, source, pos)
+				classFQN := a.resolveAccessChain(line, wordStart, source, pos, file)
 				if classFQN != "" {
 					if member := a.resolver.FindMember(classFQN, word); member != nil {
 						return member

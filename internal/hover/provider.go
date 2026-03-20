@@ -62,7 +62,7 @@ func (p *Provider) GetHover(uri, source string, pos protocol.Position) *protocol
 
 	// Handle $variable hover
 	if strings.HasPrefix(word, "$") {
-		return p.hoverVariable(file, source, pos, word)
+		return p.hoverVariable(source, pos, file, word)
 	}
 
 	// Handle self/static/parent keywords — resolve to enclosing class
@@ -98,7 +98,7 @@ func (p *Provider) GetHover(uri, source string, pos protocol.Position) *protocol
 	}
 
 	// Check for -> or :: access context
-	if classFQN := p.resolveAccessChain(line, wordStart, file, source, pos); classFQN != "" {
+	if classFQN := p.resolveAccessChain(line, wordStart, source, pos, file); classFQN != "" {
 		if sym := p.resolver.FindMember(classFQN, word); sym != nil {
 			content := p.formatHover(sym)
 			if content != "" {
@@ -169,7 +169,7 @@ func (p *Provider) GetHover(uri, source string, pos protocol.Position) *protocol
 // returns the FQN of the class that owns the member at wordStart.
 // E.g. for "$this->logger->info()", if wordStart points at "info",
 // it resolves $this -> Service, finds property "logger" -> Logger type, returns Logger FQN.
-func (p *Provider) resolveAccessChain(line string, wordStart int, file *parser.FileNode, source string, pos protocol.Position) string {
+func (p *Provider) resolveAccessChain(line string, wordStart int, source string, pos protocol.Position, file *parser.FileNode) string {
 	i := wordStart
 
 	// Skip whitespace before the word
@@ -180,18 +180,13 @@ func (p *Provider) resolveAccessChain(line string, wordStart int, file *parser.F
 		return ""
 	}
 
-	// Check for -> or ::
-	var op string
 	if line[i-2] == '-' && line[i-1] == '>' {
-		op = "->"
 		i -= 2
 	} else if line[i-2] == ':' && line[i-1] == ':' {
-		op = "::"
 		i -= 2
 	} else {
 		return ""
 	}
-	_ = op
 
 	// Skip whitespace before operator
 	for i > 0 && (line[i-1] == ' ' || line[i-1] == '\t') {
@@ -252,7 +247,7 @@ func (p *Provider) resolveAccessChain(line string, wordStart int, file *parser.F
 
 	if strings.HasPrefix(target, "$") {
 		// Variable: resolve its type
-		typeFQN := p.resolver.ResolveVariableType(target, file, source, pos)
+		typeFQN := p.resolver.ResolveVariableType(target, source, pos, file)
 		return typeFQN
 	}
 
@@ -267,7 +262,7 @@ func (p *Provider) resolveAccessChain(line string, wordStart int, file *parser.F
 
 	// Otherwise, recursively resolve the chain to get the owner class,
 	// then find the target as a member and return its type.
-	ownerFQN := p.resolveAccessChain(line, i, file, source, pos)
+	ownerFQN := p.resolveAccessChain(line, i, source, pos, file)
 	if ownerFQN == "" {
 		return ""
 	}
@@ -278,13 +273,13 @@ func (p *Provider) resolveAccessChain(line string, wordStart int, file *parser.F
 	return p.resolver.MemberType(member, file)
 }
 
-func (p *Provider) hoverVariable(file *parser.FileNode, source string, pos protocol.Position, varName string) *protocol.Hover {
+func (p *Provider) hoverVariable(source string, pos protocol.Position, file *parser.FileNode, varName string) *protocol.Hover {
 	if file == nil {
 		return nil
 	}
 
 	// Try to resolve the variable type
-	typeName := p.resolver.ResolveVariableType(varName, file, source, pos)
+	typeName := p.resolver.ResolveVariableType(varName, source, pos, file)
 	if typeName != "" {
 		var sb strings.Builder
 		sb.WriteString(fmt.Sprintf("**%s**\n", varName))

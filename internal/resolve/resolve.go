@@ -133,7 +133,7 @@ func (r *Resolver) MemberType(member *symbols.Symbol, file *parser.FileNode) str
 // ResolveVariableType infers the type of a variable from context:
 // method/function parameters, class properties, $var = new ClassName(...),
 // @var annotations, and literal type inference.
-func (r *Resolver) ResolveVariableType(varName string, file *parser.FileNode, source string, pos protocol.Position) string {
+func (r *Resolver) ResolveVariableType(varName string, source string, pos protocol.Position, file *parser.FileNode) string {
 	if file == nil {
 		return ""
 	}

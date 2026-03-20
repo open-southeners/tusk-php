@@ -235,7 +235,7 @@ func (p *Provider) resolveChainType(source, prefix, op string, pos protocol.Posi
 
 	// $variable-> or $variable::
 	if strings.HasPrefix(target, "$") {
-		return p.resolver.ResolveVariableType(target, file, source, pos)
+		return p.resolver.ResolveVariableType(target, source, pos, file)
 	}
 
 	// ClassName:: or ClassName->  (static access or after new)
