@@ -260,7 +260,7 @@ func (s *Server) handleInitialize(msg *jsonRPCMessage) {
 			SignatureHelpProvider: &protocol.SignatureHelpOptions{TriggerCharacters: []string{"(", ","}},
 			RenameProvider:       &protocol.RenameOptions{PrepareProvider: true},
 			CodeActionProvider:   &protocol.CodeActionOptions{CodeActionKinds: []string{"refactor", "source"}},
-			ExecuteCommandProvider: &protocol.ExecuteCommandOptions{Commands: []string{"phpLsp.copyNamespace", "phpLsp.moveToNamespace"}},
+			ExecuteCommandProvider: &protocol.ExecuteCommandOptions{Commands: []string{"phpLsp.namespaceForPath"}},
 		},
 		ServerInfo: protocol.ServerInfo{Name: ServerName, Version: ServerVersion},
 	})
@@ -450,14 +450,7 @@ func (s *Server) handleExecuteCommand(msg *jsonRPCMessage) {
 				source := s.getDocument(uri)
 				autoload := composer.GetAutoloadPaths(s.rootPath)
 				edit := s.analyzer.MoveToNamespace(uri, source, targetNS, autoload, s.getDocumentReader())
-				if edit != nil {
-					// Apply the edit via workspace/applyEdit
-					s.sendNotification("workspace/applyEdit", protocol.ApplyWorkspaceEditParams{
-						Label: "Move to namespace " + targetNS,
-						Edit:  *edit,
-					})
-				}
-				s.sendResponse(msg.ID, nil)
+				s.sendResponse(msg.ID, edit)
 				return
 			}
 		}

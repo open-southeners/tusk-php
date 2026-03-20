@@ -143,6 +143,100 @@ class Service {
 	}
 }
 
+func TestMoveToNamespaceUpdatesPartialNamespaceReferences(t *testing.T) {
+	sources := map[string]string{
+		"file:///app/Http/Controllers/CategoryController.php": `<?php
+
+namespace App\Http\Controllers;
+
+class CategoryController {
+    public function index(): void {}
+}
+`,
+		"file:///routes/web.php": `<?php
+
+use App\Http\Controllers;
+
+Route::get('/categories', [Controllers\CategoryController::class, 'index']);
+Route::get('/cats', [Controllers\CategoryController::class, 'show']);
+`,
+		"file:///routes/api.php": `<?php
+
+use App\Http\Controllers\CategoryController;
+
+Route::get('/api/categories', [CategoryController::class, 'index']);
+`,
+		"file:///app/Service.php": `<?php
+
+namespace App;
+
+use App\Http;
+
+class Service {
+    public function run(): void {
+        $ctrl = new Http\Controllers\CategoryController();
+    }
+}
+`,
+	}
+	a, reader := setupRenameAnalyzer(sources)
+
+	edit := a.MoveToNamespace(
+		"file:///app/Http/Controllers/CategoryController.php",
+		sources["file:///app/Http/Controllers/CategoryController.php"],
+		"App\\Http\\Controllers\\Api",
+		nil,
+		reader,
+	)
+	if edit == nil {
+		t.Fatal("expected WorkspaceEdit")
+	}
+
+	// Check routes/web.php: Controllers\CategoryController → Controllers\Api\CategoryController
+	webEdits := edit.Changes["file:///routes/web.php"]
+	partialCount := 0
+	for _, e := range webEdits {
+		if e.NewText == "Controllers\\Api\\CategoryController" {
+			partialCount++
+		}
+	}
+	if partialCount < 2 {
+		t.Errorf("expected at least 2 partial namespace updates in web.php, got %d", partialCount)
+		for _, e := range webEdits {
+			t.Logf("  edit: %q at line %d col %d-%d", e.NewText, e.Range.Start.Line, e.Range.Start.Character, e.Range.End.Character)
+		}
+	}
+
+	// Check routes/api.php: direct import should be updated
+	apiEdits := edit.Changes["file:///routes/api.php"]
+	directFound := false
+	for _, e := range apiEdits {
+		if e.NewText == "App\\Http\\Controllers\\Api\\CategoryController" {
+			directFound = true
+			break
+		}
+	}
+	if !directFound {
+		t.Error("expected direct use import updated in api.php")
+	}
+
+	// Check app/Service.php: Http\Controllers\CategoryController → Http\Controllers\Api\CategoryController
+	svcEdits := edit.Changes["file:///app/Service.php"]
+	deepPartialFound := false
+	for _, e := range svcEdits {
+		if e.NewText == "Http\\Controllers\\Api\\CategoryController" {
+			deepPartialFound = true
+			break
+		}
+	}
+	if !deepPartialFound {
+		t.Error("expected deep partial namespace update in Service.php")
+		for _, e := range svcEdits {
+			t.Logf("  edit: %q at line %d col %d-%d", e.NewText, e.Range.Start.Line, e.Range.Start.Character, e.Range.End.Character)
+		}
+	}
+}
+
 func TestMoveToNamespaceIncludesFileRename(t *testing.T) {
 	sources := map[string]string{
 		"file:///project/app/Models/User.php": `<?php

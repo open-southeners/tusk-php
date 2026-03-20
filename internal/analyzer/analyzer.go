@@ -1486,6 +1486,21 @@ func (a *Analyzer) MoveToNamespace(uri, source, targetNS string, autoloadEntries
 	}
 
 	// 2. Update all references across the workspace
+	//
+	// We need to handle several reference patterns:
+	//   a) Direct import:  use App\Http\Controllers\CategoryController;
+	//   b) FQN reference:  \App\Http\Controllers\CategoryController::class
+	//   c) Namespace import + partial ref:  use App\Http\Controllers;
+	//      then  Controllers\CategoryController::class
+	//   d) Parent namespace import:  use App\Http;
+	//      then  Http\Controllers\CategoryController::class
+	//
+	// For (c) and (d), we need to compute the relative path change.
+	// Old: App\Http\Controllers\CategoryController
+	// New: App\Http\Controllers\Api\CategoryController
+	// If a file imports "use App\Http\Controllers;" (alias "Controllers"),
+	// then "Controllers\CategoryController" must become "Controllers\Api\CategoryController"
+
 	allURIs := a.index.GetAllFileURIs()
 	for _, fileURI := range allURIs {
 		if fileURI == uri {
@@ -1501,13 +1516,51 @@ func (a *Analyzer) MoveToNamespace(uri, source, targetNS string, autoloadEntries
 			continue
 		}
 
+		fileFile := parser.ParseFile(fileSource)
 		fileLines := strings.Split(fileSource, "\n")
 		var fileEdits []protocol.TextEdit
 
+		// Build a map of partial reference patterns from this file's use statements.
+		// For each use statement that imports a parent namespace of the old FQN,
+		// compute what the old partial reference looks like and what it should become.
+		type partialRef struct {
+			oldRef string // e.g. "Controllers\CategoryController"
+			newRef string // e.g. "Controllers\Api\CategoryController"
+		}
+		var partials []partialRef
+
+		if fileFile != nil {
+			for _, u := range fileFile.Uses {
+				// Check if this use statement imports a prefix of the old FQN
+				// e.g. use App\Http\Controllers; (FullName = "App\Http\Controllers", Alias = "Controllers")
+				if oldFQN == u.FullName {
+					// Direct import of the exact class — handled below in (a)
+					continue
+				}
+				if strings.HasPrefix(oldFQN, u.FullName+"\\") {
+					// This use statement imports a parent namespace
+					// The remainder after the imported namespace is the partial reference
+					remainder := strings.TrimPrefix(oldFQN, u.FullName+"\\")
+					oldPartial := u.Alias + "\\" + remainder
+
+					newRemainder := strings.TrimPrefix(newFQN, u.FullName+"\\")
+					if strings.HasPrefix(newFQN, u.FullName+"\\") {
+						// New FQN still shares the same prefix — just update the remainder
+						newPartial := u.Alias + "\\" + newRemainder
+						partials = append(partials, partialRef{oldRef: oldPartial, newRef: newPartial})
+					} else {
+						// New FQN has a completely different prefix — the partial ref
+						// becomes invalid; the use statement itself needs updating.
+						// This is handled by the FQN replacement below.
+					}
+				}
+			}
+		}
+
 		for i, line := range fileLines {
-			// Update "use OldNS\TypeName" → "use NewNS\TypeName"
-			// and "use OldNS\TypeName as Alias" → "use NewNS\TypeName as Alias"
 			trimmed := strings.TrimSpace(line)
+
+			// (a) Direct import: "use OldFQN;" or "use OldFQN as Alias;"
 			if strings.HasPrefix(trimmed, "use ") && strings.Contains(line, oldFQN) {
 				idx := strings.Index(line, oldFQN)
 				if idx >= 0 {
@@ -1522,7 +1575,7 @@ func (a *Analyzer) MoveToNamespace(uri, source, targetNS string, autoloadEntries
 				}
 			}
 
-			// Update fully-qualified references like \OldNS\TypeName
+			// (b) Fully-qualified references: \OldFQN
 			fqnWithSlash := "\\" + oldFQN
 			newFQNWithSlash := "\\" + newFQN
 			offset := 0
@@ -1545,6 +1598,37 @@ func (a *Analyzer) MoveToNamespace(uri, source, targetNS string, autoloadEntries
 					NewText: newFQNWithSlash,
 				})
 				offset = end
+			}
+
+			// (c) Partial namespace references: Controllers\CategoryController
+			for _, pr := range partials {
+				offset := 0
+				for {
+					idx := strings.Index(line[offset:], pr.oldRef)
+					if idx < 0 {
+						break
+					}
+					col := offset + idx
+					end := col + len(pr.oldRef)
+					// Word boundary check before (should not be preceded by another word char)
+					if col > 0 && isWordChar(line[col-1]) {
+						offset = end
+						continue
+					}
+					// Word boundary check after
+					if end < len(line) && isWordChar(line[end]) {
+						offset = end
+						continue
+					}
+					fileEdits = append(fileEdits, protocol.TextEdit{
+						Range: protocol.Range{
+							Start: protocol.Position{Line: i, Character: col},
+							End:   protocol.Position{Line: i, Character: end},
+						},
+						NewText: pr.newRef,
+					})
+					offset = end
+				}
 			}
 		}
 
