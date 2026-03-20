@@ -1,5 +1,7 @@
 package protocol
 
+import "encoding/json"
+
 // MessageType represents LSP message types.
 type MessageType int
 
@@ -256,6 +258,9 @@ type ServerCapabilities struct {
 	DiagnosticProvider         *DiagnosticOptions          `json:"diagnosticProvider,omitempty"`
 	SignatureHelpProvider      *SignatureHelpOptions        `json:"signatureHelpProvider,omitempty"`
 	DocumentFormattingProvider bool                        `json:"documentFormattingProvider"`
+	RenameProvider             *RenameOptions              `json:"renameProvider,omitempty"`
+	CodeActionProvider         *CodeActionOptions          `json:"codeActionProvider,omitempty"`
+	ExecuteCommandProvider     *ExecuteCommandOptions      `json:"executeCommandProvider,omitempty"`
 }
 
 // CompletionOptions for completion requests.
@@ -293,4 +298,101 @@ type SignatureInformation struct {
 type ParameterInformation struct {
 	Label         string `json:"label"`
 	Documentation string `json:"documentation,omitempty"`
+}
+
+// --- Rename types ---
+
+// RenameOptions for rename support.
+type RenameOptions struct {
+	PrepareProvider bool `json:"prepareProvider"`
+}
+
+// RenameParams for textDocument/rename.
+type RenameParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Position     Position               `json:"position"`
+	NewName      string                 `json:"newName"`
+}
+
+// PrepareRenameResult is the response for textDocument/prepareRename.
+type PrepareRenameResult struct {
+	Range       Range  `json:"range"`
+	Placeholder string `json:"placeholder"`
+}
+
+// --- Workspace edit types ---
+
+// TextEdit is a textual edit applicable to a text document.
+type TextEdit struct {
+	Range   Range  `json:"range"`
+	NewText string `json:"newText"`
+}
+
+// WorkspaceEdit represents changes to many resources managed in the workspace.
+type WorkspaceEdit struct {
+	Changes map[string][]TextEdit `json:"changes,omitempty"`
+}
+
+// --- Code action types ---
+
+// CodeActionOptions for code action support.
+type CodeActionOptions struct {
+	CodeActionKinds []string `json:"codeActionKinds,omitempty"`
+}
+
+// CodeActionParams for textDocument/codeAction.
+type CodeActionParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Range        Range                  `json:"range"`
+	Context      CodeActionContext      `json:"context"`
+}
+
+// CodeActionContext carries additional information about the context in which
+// a code action is requested.
+type CodeActionContext struct {
+	Diagnostics []Diagnostic `json:"diagnostics"`
+	Only        []string     `json:"only,omitempty"`
+}
+
+// CodeAction represents a change that can be performed in code.
+type CodeAction struct {
+	Title       string         `json:"title"`
+	Kind        string         `json:"kind,omitempty"`
+	Diagnostics []Diagnostic   `json:"diagnostics,omitempty"`
+	IsPreferred bool           `json:"isPreferred,omitempty"`
+	Edit        *WorkspaceEdit `json:"edit,omitempty"`
+	Command     *Command       `json:"command,omitempty"`
+}
+
+// Command represents a reference to a command.
+type Command struct {
+	Title     string            `json:"title"`
+	Command   string            `json:"command"`
+	Arguments []json.RawMessage `json:"arguments,omitempty"`
+}
+
+// --- Execute command types ---
+
+// ExecuteCommandOptions for executeCommand support.
+type ExecuteCommandOptions struct {
+	Commands []string `json:"commands"`
+}
+
+// ExecuteCommandParams for workspace/executeCommand.
+type ExecuteCommandParams struct {
+	Command   string            `json:"command"`
+	Arguments []json.RawMessage `json:"arguments,omitempty"`
+}
+
+// --- Server-to-client request types ---
+
+// ApplyWorkspaceEditParams for workspace/applyEdit (server → client).
+type ApplyWorkspaceEditParams struct {
+	Label string        `json:"label,omitempty"`
+	Edit  WorkspaceEdit `json:"edit"`
+}
+
+// ApplyWorkspaceEditResult is the client's response to workspace/applyEdit.
+type ApplyWorkspaceEditResult struct {
+	Applied bool `json:"applied"`
 }

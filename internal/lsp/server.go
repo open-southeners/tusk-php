@@ -202,6 +202,14 @@ func (s *Server) handleMessage(msg *jsonRPCMessage) {
 		s.handleDocumentSymbol(msg)
 	case "textDocument/signatureHelp":
 		s.handleSignatureHelp(msg)
+	case "textDocument/prepareRename":
+		s.handlePrepareRename(msg)
+	case "textDocument/rename":
+		s.handleRename(msg)
+	case "textDocument/codeAction":
+		s.handleCodeAction(msg)
+	case "workspace/executeCommand":
+		s.handleExecuteCommand(msg)
 	default:
 		if msg.ID != nil {
 			s.sendError(msg.ID, -32601, fmt.Sprintf("Method not found: %s", msg.Method))
@@ -250,6 +258,9 @@ func (s *Server) handleInitialize(msg *jsonRPCMessage) {
 			CompletionProvider: &protocol.CompletionOptions{TriggerCharacters: []string{".", ">", ":", "$", "\\", "|", "#", "[", "(", "'", "\""}, ResolveProvider: false},
 			HoverProvider:      true, DefinitionProvider: true, ReferencesProvider: true, DocumentSymbolProvider: true,
 			SignatureHelpProvider: &protocol.SignatureHelpOptions{TriggerCharacters: []string{"(", ","}},
+			RenameProvider:       &protocol.RenameOptions{PrepareProvider: true},
+			CodeActionProvider:   &protocol.CodeActionOptions{CodeActionKinds: []string{"refactor", "source"}},
+			ExecuteCommandProvider: &protocol.ExecuteCommandOptions{Commands: []string{"phpLsp.copyNamespace"}},
 		},
 		ServerInfo: protocol.ServerInfo{Name: ServerName, Version: ServerVersion},
 	})
@@ -378,6 +389,79 @@ func (s *Server) handleSignatureHelp(msg *jsonRPCMessage) {
 	}
 	source := s.getDocument(params.TextDocument.URI)
 	s.sendResponse(msg.ID, s.analyzer.GetSignatureHelp(params.TextDocument.URI, source, params.Position))
+}
+
+func (s *Server) handlePrepareRename(msg *jsonRPCMessage) {
+	var params protocol.TextDocumentPositionParams
+	if json.Unmarshal(msg.Params, &params) != nil {
+		s.sendError(msg.ID, -32602, "Invalid params")
+		return
+	}
+	source := s.getDocument(params.TextDocument.URI)
+	result := s.analyzer.PrepareRename(params.TextDocument.URI, source, params.Position)
+	s.sendResponse(msg.ID, result)
+}
+
+func (s *Server) handleRename(msg *jsonRPCMessage) {
+	var params protocol.RenameParams
+	if json.Unmarshal(msg.Params, &params) != nil {
+		s.sendError(msg.ID, -32602, "Invalid params")
+		return
+	}
+	source := s.getDocument(params.TextDocument.URI)
+	result := s.analyzer.Rename(params.TextDocument.URI, source, params.Position, params.NewName, s.getDocumentReader())
+	s.sendResponse(msg.ID, result)
+}
+
+func (s *Server) handleCodeAction(msg *jsonRPCMessage) {
+	var params protocol.CodeActionParams
+	if json.Unmarshal(msg.Params, &params) != nil {
+		s.sendError(msg.ID, -32602, "Invalid params")
+		return
+	}
+	source := s.getDocument(params.TextDocument.URI)
+	result := s.analyzer.GetCodeActions(params.TextDocument.URI, source, params)
+	s.sendResponse(msg.ID, result)
+}
+
+func (s *Server) handleExecuteCommand(msg *jsonRPCMessage) {
+	var params protocol.ExecuteCommandParams
+	if json.Unmarshal(msg.Params, &params) != nil {
+		s.sendError(msg.ID, -32602, "Invalid params")
+		return
+	}
+	switch params.Command {
+	case "phpLsp.copyNamespace":
+		if len(params.Arguments) > 0 {
+			var uri string
+			if json.Unmarshal(params.Arguments[0], &uri) == nil {
+				source := s.getDocument(uri)
+				ns := s.analyzer.GetFileNamespace(uri, source)
+				s.sendResponse(msg.ID, ns)
+				return
+			}
+		}
+		s.sendResponse(msg.ID, nil)
+	default:
+		s.sendError(msg.ID, -32601, fmt.Sprintf("Unknown command: %s", params.Command))
+	}
+}
+
+// getDocumentReader returns a function that reads document content by URI,
+// falling back to disk if the document isn't open in the editor.
+func (s *Server) getDocumentReader() func(string) string {
+	return func(uri string) string {
+		if source, ok := s.documents.Load(uri); ok {
+			return source.(string)
+		}
+		// Fall back to reading from disk
+		path := strings.TrimPrefix(uri, "file://")
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return ""
+		}
+		return string(content)
+	}
 }
 
 func (s *Server) getDocument(uri string) string {

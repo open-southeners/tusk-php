@@ -634,6 +634,17 @@ func removeFromSlice(slice []string, item string) []string {
 	return result
 }
 
+// GetAllFileURIs returns all file URIs that have been indexed.
+func (idx *Index) GetAllFileURIs() []string {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	uris := make([]string, 0, len(idx.fileSymbols))
+	for uri := range idx.fileSymbols {
+		uris = append(uris, uri)
+	}
+	return uris
+}
+
 func URIToPath(uri string) string {
 	path := strings.TrimPrefix(uri, "file://")
 	return filepath.Clean(path)

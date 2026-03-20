@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/open-southeners/php-lsp/internal/completion"
@@ -689,6 +690,477 @@ func getWordAt(source string, pos protocol.Position) string {
 
 func isWordChar(ch byte) bool {
 	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '\\'
+}
+
+// --- Rename support ---
+
+// getWordRangeAt returns the word at the cursor and its exact range in the document.
+func getWordRangeAt(source string, pos protocol.Position) (string, protocol.Range) {
+	lines := strings.Split(source, "\n")
+	if pos.Line < 0 || pos.Line >= len(lines) {
+		return "", protocol.Range{}
+	}
+	line := lines[pos.Line]
+	if pos.Character > len(line) {
+		return "", protocol.Range{}
+	}
+
+	ch := pos.Character
+	// Handle cursor on '$' for variables
+	if ch < len(line) && line[ch] == '$' {
+		start := ch
+		end := ch + 1
+		for end < len(line) && isWordChar(line[end]) {
+			end++
+		}
+		if end > start+1 {
+			return line[start:end], protocol.Range{
+				Start: protocol.Position{Line: pos.Line, Character: start},
+				End:   protocol.Position{Line: pos.Line, Character: end},
+			}
+		}
+		return "", protocol.Range{}
+	}
+
+	start := pos.Character
+	for start > 0 && isWordChar(line[start-1]) {
+		start--
+	}
+	hasDollar := start > 0 && line[start-1] == '$'
+	if hasDollar {
+		start--
+	}
+	end := pos.Character
+	for end < len(line) && isWordChar(line[end]) {
+		end++
+	}
+	if start >= end {
+		return "", protocol.Range{}
+	}
+	return line[start:end], protocol.Range{
+		Start: protocol.Position{Line: pos.Line, Character: start},
+		End:   protocol.Position{Line: pos.Line, Character: end},
+	}
+}
+
+// PrepareRename checks if the symbol at the cursor can be renamed and returns
+// the range and current name as a placeholder.
+func (a *Analyzer) PrepareRename(uri, source string, pos protocol.Position) *protocol.PrepareRenameResult {
+	word, wordRange := getWordRangeAt(source, pos)
+	if word == "" {
+		return nil
+	}
+
+	// Reject built-in symbols
+	file := parser.ParseFile(source)
+
+	// Determine what kind of symbol this is
+	// Variables are always renameable (local scope)
+	if strings.HasPrefix(word, "$") && word != "$this" {
+		return &protocol.PrepareRenameResult{Range: wordRange, Placeholder: word}
+	}
+
+	// Check if it's a known symbol in the index
+	fqn := ""
+	if file != nil {
+		fqn = a.resolveClassName(word, file)
+	}
+	if fqn == "" {
+		fqn = word
+	}
+
+	sym := a.index.Lookup(fqn)
+	if sym == nil {
+		// Try by short name
+		syms := a.index.LookupByName(word)
+		if len(syms) > 0 {
+			sym = syms[0]
+		}
+	}
+
+	// Reject built-ins
+	if sym != nil && sym.Source == symbols.SourceBuiltin {
+		return nil
+	}
+
+	// Check for member access context (method/property rename)
+	lines := strings.Split(source, "\n")
+	if pos.Line >= 0 && pos.Line < len(lines) {
+		line := lines[pos.Line]
+		wordStart := wordRange.Start.Character
+		if wordStart >= 2 {
+			before := line[:wordStart]
+			trimmed := strings.TrimRight(before, " \t")
+			if strings.HasSuffix(trimmed, "->") || strings.HasSuffix(trimmed, "::") {
+				return &protocol.PrepareRenameResult{Range: wordRange, Placeholder: word}
+			}
+		}
+	}
+
+	// If it's a symbol we can find, allow rename
+	if sym != nil {
+		return &protocol.PrepareRenameResult{Range: wordRange, Placeholder: word}
+	}
+
+	// Allow rename for identifiers that could be declarations in the current file
+	if file != nil {
+		for _, cls := range file.Classes {
+			if cls.Name == word {
+				return &protocol.PrepareRenameResult{Range: wordRange, Placeholder: word}
+			}
+			for _, m := range cls.Methods {
+				if m.Name == word {
+					return &protocol.PrepareRenameResult{Range: wordRange, Placeholder: word}
+				}
+			}
+			for _, p := range cls.Properties {
+				if p.Name == word || "$"+p.Name == word {
+					return &protocol.PrepareRenameResult{Range: wordRange, Placeholder: word}
+				}
+			}
+		}
+		for _, fn := range file.Functions {
+			if fn.Name == word {
+				return &protocol.PrepareRenameResult{Range: wordRange, Placeholder: word}
+			}
+		}
+		for _, iface := range file.Interfaces {
+			if iface.Name == word {
+				return &protocol.PrepareRenameResult{Range: wordRange, Placeholder: word}
+			}
+		}
+		for _, en := range file.Enums {
+			if en.Name == word {
+				return &protocol.PrepareRenameResult{Range: wordRange, Placeholder: word}
+			}
+		}
+	}
+
+	return nil
+}
+
+// Rename performs a rename of the symbol at the given position.
+// readDocument is used to read file contents for files not open in the editor.
+func (a *Analyzer) Rename(uri, source string, pos protocol.Position, newName string, readDocument func(string) string) *protocol.WorkspaceEdit {
+	word, _ := getWordRangeAt(source, pos)
+	if word == "" {
+		return nil
+	}
+
+	// Variable rename — local scope only
+	if strings.HasPrefix(word, "$") && word != "$this" {
+		return a.renameVariable(uri, source, pos, word, newName)
+	}
+
+	// Resolve the symbol to its FQN
+	file := parser.ParseFile(source)
+	fqn := ""
+
+	// Check if cursor is on a member access
+	lines := strings.Split(source, "\n")
+	if pos.Line >= 0 && pos.Line < len(lines) {
+		line := lines[pos.Line]
+		wordStart := pos.Character
+		for wordStart > 0 && isWordChar(line[wordStart-1]) {
+			wordStart--
+		}
+		if wordStart >= 2 {
+			before := line[:wordStart]
+			trimmed := strings.TrimRight(before, " \t")
+			if strings.HasSuffix(trimmed, "->") || strings.HasSuffix(trimmed, "::") {
+				classFQN := a.resolveAccessChain(line, wordStart, file, source, pos)
+				if classFQN != "" {
+					member := a.findMember(classFQN, word)
+					if member != nil {
+						fqn = member.FQN
+					}
+				}
+			}
+		}
+	}
+
+	if fqn == "" && file != nil {
+		fqn = a.resolveClassName(word, file)
+	}
+	if fqn == "" {
+		fqn = word
+	}
+
+	sym := a.index.Lookup(fqn)
+	if sym == nil {
+		syms := a.index.LookupByName(word)
+		if best := symbols.PickBestStandalone(syms, word); best != nil {
+			sym = best
+			fqn = sym.FQN
+		}
+	}
+
+	if sym == nil || sym.Source == symbols.SourceBuiltin {
+		return nil
+	}
+
+	return a.renameSymbol(sym, newName, readDocument)
+}
+
+// renameVariable renames a variable within its enclosing function scope.
+func (a *Analyzer) renameVariable(uri, source string, pos protocol.Position, oldName, newName string) *protocol.WorkspaceEdit {
+	if !strings.HasPrefix(newName, "$") {
+		newName = "$" + newName
+	}
+	file := parser.ParseFile(source)
+	if file == nil {
+		return nil
+	}
+
+	// Find enclosing method/function scope
+	method := a.findEnclosingMethod(file, pos)
+	scopeStart := 0
+	lines := strings.Split(source, "\n")
+	scopeEnd := len(lines)
+	if method != nil {
+		scopeStart = method.StartLine
+		// Estimate scope end: find the next method after this one, or use file end
+		// Scan for closing brace by counting depth from method start
+		depth := 0
+		for i := scopeStart; i < len(lines); i++ {
+			for _, ch := range lines[i] {
+				if ch == '{' {
+					depth++
+				} else if ch == '}' {
+					depth--
+					if depth == 0 {
+						scopeEnd = i + 1
+						goto scopeFound
+					}
+				}
+			}
+		}
+	scopeFound:
+	}
+
+	var edits []protocol.TextEdit
+	for i := scopeStart; i < scopeEnd && i < len(lines); i++ {
+		line := lines[i]
+		// Find all occurrences of the variable on this line
+		offset := 0
+		for {
+			idx := strings.Index(line[offset:], oldName)
+			if idx < 0 {
+				break
+			}
+			col := offset + idx
+			end := col + len(oldName)
+			// Ensure it's a complete token (not part of a longer identifier)
+			if end < len(line) && isWordChar(line[end]) {
+				offset = end
+				continue
+			}
+			edits = append(edits, protocol.TextEdit{
+				Range: protocol.Range{
+					Start: protocol.Position{Line: i, Character: col},
+					End:   protocol.Position{Line: i, Character: end},
+				},
+				NewText: newName,
+			})
+			offset = end
+		}
+	}
+
+	if len(edits) == 0 {
+		return nil
+	}
+	return &protocol.WorkspaceEdit{
+		Changes: map[string][]protocol.TextEdit{uri: edits},
+	}
+}
+
+// renameSymbol renames a class, method, property, function, interface, enum, or trait
+// across the entire workspace.
+func (a *Analyzer) renameSymbol(sym *symbols.Symbol, newName string, readDocument func(string) string) *protocol.WorkspaceEdit {
+	changes := make(map[string][]protocol.TextEdit)
+	oldName := sym.Name
+
+	// For properties, strip $ from the name for access sites
+	oldBare := strings.TrimPrefix(oldName, "$")
+	newBare := strings.TrimPrefix(newName, "$")
+
+	// Get all indexed file URIs
+	allURIs := a.index.GetAllFileURIs()
+
+	for _, fileURI := range allURIs {
+		source := readDocument(fileURI)
+		if source == "" {
+			continue
+		}
+		lines := strings.Split(source, "\n")
+		var fileEdits []protocol.TextEdit
+
+		for i, line := range lines {
+			switch sym.Kind {
+			case symbols.KindClass, symbols.KindInterface, symbols.KindEnum, symbols.KindTrait:
+				// Search for the short name as a word boundary
+				fileEdits = append(fileEdits, findWordEdits(line, i, oldName, newName)...)
+
+			case symbols.KindMethod:
+				// Search for ->oldName or ::oldName
+				fileEdits = append(fileEdits, findWordEdits(line, i, oldName, newName)...)
+
+			case symbols.KindProperty:
+				// In declaration: $oldName
+				fileEdits = append(fileEdits, findWordEdits(line, i, "$"+oldBare, "$"+newBare)...)
+				// In access: ->oldName (without $)
+				needle := "->" + oldBare
+				offset := 0
+				for {
+					idx := strings.Index(line[offset:], needle)
+					if idx < 0 {
+						break
+					}
+					col := offset + idx + 2 // skip "->"
+					end := col + len(oldBare)
+					if end < len(line) && isWordChar(line[end]) {
+						offset = end
+						continue
+					}
+					fileEdits = append(fileEdits, protocol.TextEdit{
+						Range: protocol.Range{
+							Start: protocol.Position{Line: i, Character: col},
+							End:   protocol.Position{Line: i, Character: end},
+						},
+						NewText: newBare,
+					})
+					offset = end
+				}
+
+			case symbols.KindFunction:
+				fileEdits = append(fileEdits, findWordEdits(line, i, oldName, newName)...)
+			}
+		}
+
+		if len(fileEdits) > 0 {
+			changes[fileURI] = fileEdits
+		}
+	}
+
+	if len(changes) == 0 {
+		return nil
+	}
+	return &protocol.WorkspaceEdit{Changes: changes}
+}
+
+// findWordEdits finds all occurrences of `word` on `line` that appear as complete
+// identifiers (not part of a longer word) and returns TextEdits to replace them.
+func findWordEdits(line string, lineNum int, oldWord, newWord string) []protocol.TextEdit {
+	var edits []protocol.TextEdit
+	offset := 0
+	for {
+		idx := strings.Index(line[offset:], oldWord)
+		if idx < 0 {
+			break
+		}
+		col := offset + idx
+		end := col + len(oldWord)
+		// Check word boundary before
+		if col > 0 && (isWordChar(line[col-1]) || line[col-1] == '$') {
+			offset = end
+			continue
+		}
+		// Check word boundary after
+		if end < len(line) && isWordChar(line[end]) {
+			offset = end
+			continue
+		}
+		edits = append(edits, protocol.TextEdit{
+			Range: protocol.Range{
+				Start: protocol.Position{Line: lineNum, Character: col},
+				End:   protocol.Position{Line: lineNum, Character: end},
+			},
+			NewText: newWord,
+		})
+		offset = end
+	}
+	return edits
+}
+
+// --- Code actions ---
+
+// GetCodeActions returns available code actions for the given range.
+func (a *Analyzer) GetCodeActions(uri, source string, params protocol.CodeActionParams) []protocol.CodeAction {
+	var actions []protocol.CodeAction
+
+	file := parser.ParseFile(source)
+	if file == nil {
+		return actions
+	}
+
+	// Offer "Copy Namespace" for any position
+	ns := file.Namespace
+	primaryClass := ""
+	for _, cls := range file.Classes {
+		primaryClass = cls.Name
+		break
+	}
+	if primaryClass == "" {
+		for _, iface := range file.Interfaces {
+			primaryClass = iface.Name
+			break
+		}
+	}
+	if primaryClass == "" {
+		for _, en := range file.Enums {
+			primaryClass = en.Name
+			break
+		}
+	}
+
+	fqn := ns
+	if primaryClass != "" {
+		if ns != "" {
+			fqn = ns + "\\" + primaryClass
+		} else {
+			fqn = primaryClass
+		}
+	}
+
+	if fqn != "" {
+		uriJSON, _ := json.Marshal(uri)
+		actions = append(actions, protocol.CodeAction{
+			Title:   "Copy Namespace: " + fqn,
+			Kind:    "source",
+			Command: &protocol.Command{Title: "Copy Namespace", Command: "phpLsp.copyNamespace", Arguments: []json.RawMessage{uriJSON}},
+		})
+	}
+
+	return actions
+}
+
+// GetFileNamespace returns the FQN of the primary class/interface/enum in a file,
+// or the namespace if no named type exists.
+func (a *Analyzer) GetFileNamespace(uri, source string) string {
+	file := parser.ParseFile(source)
+	if file == nil {
+		return ""
+	}
+	ns := file.Namespace
+	for _, cls := range file.Classes {
+		if ns != "" {
+			return ns + "\\" + cls.Name
+		}
+		return cls.Name
+	}
+	for _, iface := range file.Interfaces {
+		if ns != "" {
+			return ns + "\\" + iface.Name
+		}
+		return iface.Name
+	}
+	for _, en := range file.Enums {
+		if ns != "" {
+			return ns + "\\" + en.Name
+		}
+		return en.Name
+	}
+	return ns
 }
 
 func min(a, b int) int {
