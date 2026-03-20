@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 
 	"github.com/open-southeners/php-lsp/internal/completion"
@@ -485,24 +486,307 @@ func buildFQN(namespace, name string) string {
 }
 
 func (a *Analyzer) FindReferences(uri, source string, pos protocol.Position) []protocol.Location {
-	word := getWordAt(source, pos)
+	return a.FindAllReferences(uri, source, pos, nil)
+}
+
+// FindAllReferences finds all occurrences of the symbol at the cursor across
+// the workspace. readDocument is used to read file contents; if nil, falls back
+// to reading from the index's stored file URIs via disk.
+func (a *Analyzer) FindAllReferences(uri, source string, pos protocol.Position, readDocument func(string) string) []protocol.Location {
+	word, _ := getWordRangeAt(source, pos)
 	if word == "" {
 		return nil
 	}
-	var locs []protocol.Location
-	for _, sym := range a.index.LookupByName(word) {
-		if sym.URI != "builtin" {
-			locs = append(locs, protocol.Location{URI: sym.URI, Range: sym.Range})
+
+	// Try to resolve as a symbol first — this handles properties ($name in declarations)
+	// and member access contexts before falling back to variable scope
+	sym := a.resolveSymbolAtCursor(uri, source, pos, word)
+
+	// Variable references — local scope only (if not resolved as a property/symbol)
+	if sym == nil && strings.HasPrefix(word, "$") && word != "$this" {
+		return a.findVariableReferences(uri, source, pos, word)
+	}
+	if sym == nil {
+		// Fallback: definition-only lookup by name (original behavior)
+		var locs []protocol.Location
+		for _, s := range a.index.LookupByName(word) {
+			if s.URI != "builtin" {
+				locs = append(locs, protocol.Location{URI: s.URI, Range: s.Range})
+			}
 		}
-		if sym.Kind == symbols.KindInterface {
-			for _, impl := range a.index.GetImplementors(sym.FQN) {
-				if impl.URI != "builtin" {
-					locs = append(locs, protocol.Location{URI: impl.URI, Range: impl.Range})
+		return locs
+	}
+
+	return a.findSymbolOccurrences(sym, readDocument)
+}
+
+// resolveSymbolAtCursor resolves the word at cursor to a Symbol, handling
+// member access chains, use imports, and namespace resolution.
+func (a *Analyzer) resolveSymbolAtCursor(uri, source string, pos protocol.Position, word string) *symbols.Symbol {
+	file := parser.ParseFile(source)
+
+	// Check for member access context (->method or ::method)
+	lines := strings.Split(source, "\n")
+	if pos.Line >= 0 && pos.Line < len(lines) {
+		line := lines[pos.Line]
+		wordStart := pos.Character
+		for wordStart > 0 && isWordChar(line[wordStart-1]) {
+			wordStart--
+		}
+		if wordStart > 0 && line[wordStart-1] == '$' {
+			wordStart--
+		}
+		if wordStart >= 2 {
+			before := line[:wordStart]
+			trimmed := strings.TrimRight(before, " \t")
+			if strings.HasSuffix(trimmed, "->") || strings.HasSuffix(trimmed, "::") {
+				classFQN := a.resolveAccessChain(line, wordStart, file, source, pos)
+				if classFQN != "" {
+					if member := a.findMember(classFQN, word); member != nil {
+						return member
+					}
 				}
 			}
 		}
 	}
+
+	// Check if it's a class property declaration ($name on a property line)
+	if strings.HasPrefix(word, "$") && file != nil {
+		bare := strings.TrimPrefix(word, "$")
+		classFQN := a.findEnclosingClass(file, pos)
+		if classFQN != "" {
+			propFQN := classFQN + "::" + bare
+			if sym := a.index.Lookup(propFQN); sym != nil {
+				return sym
+			}
+			// Also try with $ prefix (some indexes store it with $)
+			propFQN = classFQN + "::" + word
+			if sym := a.index.Lookup(propFQN); sym != nil {
+				return sym
+			}
+		}
+	}
+
+	// Try resolving as a class/interface/enum/trait name
+	fqn := ""
+	if file != nil {
+		fqn = a.resolveClassName(word, file)
+	}
+	if fqn != "" {
+		if sym := a.index.Lookup(fqn); sym != nil {
+			return sym
+		}
+	}
+
+	// Try direct lookup
+	if sym := a.index.Lookup(word); sym != nil {
+		return sym
+	}
+
+	// Fallback by short name
+	syms := a.index.LookupByName(word)
+	return symbols.PickBestStandalone(syms, word)
+}
+
+// findSymbolOccurrences scans all indexed files for references to the given symbol.
+// Returns locations for both definition sites and usage sites.
+func (a *Analyzer) findSymbolOccurrences(sym *symbols.Symbol, readDocument func(string) string) []protocol.Location {
+	var locs []protocol.Location
+	name := sym.Name
+
+	// Include the definition itself
+	if sym.URI != "" && sym.URI != "builtin" {
+		locs = append(locs, protocol.Location{URI: sym.URI, Range: sym.Range})
+	}
+
+	bareName := strings.TrimPrefix(name, "$")
+
+	allURIs := a.index.GetAllFileURIs()
+	for _, fileURI := range allURIs {
+		var source string
+		if readDocument != nil {
+			source = readDocument(fileURI)
+		} else {
+			source = a.readFileFromDisk(fileURI)
+		}
+		if source == "" {
+			continue
+		}
+		lines := strings.Split(source, "\n")
+
+		for i, line := range lines {
+			switch sym.Kind {
+			case symbols.KindClass, symbols.KindInterface, symbols.KindEnum, symbols.KindTrait:
+				locs = append(locs, findWordLocations(fileURI, line, i, name)...)
+
+			case symbols.KindMethod:
+				locs = append(locs, findWordLocations(fileURI, line, i, name)...)
+
+			case symbols.KindProperty:
+				// Declaration form: $name
+				locs = append(locs, findWordLocations(fileURI, line, i, "$"+bareName)...)
+				// Access form: ->name
+				locs = append(locs, findAccessLocations(fileURI, line, i, "->"+bareName, 2, bareName)...)
+
+			case symbols.KindFunction:
+				locs = append(locs, findWordLocations(fileURI, line, i, name)...)
+
+			case symbols.KindConstant, symbols.KindEnumCase:
+				locs = append(locs, findWordLocations(fileURI, line, i, name)...)
+			}
+		}
+	}
+
+	// Deduplicate (definition may appear twice: once from sym.Range, once from file scan)
+	return deduplicateLocations(locs)
+}
+
+// findVariableReferences finds all occurrences of a variable within its enclosing function scope.
+func (a *Analyzer) findVariableReferences(uri, source string, pos protocol.Position, varName string) []protocol.Location {
+	file := parser.ParseFile(source)
+	if file == nil {
+		return nil
+	}
+
+	method := a.findEnclosingMethod(file, pos)
+	lines := strings.Split(source, "\n")
+	scopeStart := 0
+	scopeEnd := len(lines)
+	if method != nil {
+		scopeStart = method.StartLine
+		depth := 0
+		for i := scopeStart; i < len(lines); i++ {
+			for _, ch := range lines[i] {
+				if ch == '{' {
+					depth++
+				} else if ch == '}' {
+					depth--
+					if depth == 0 {
+						scopeEnd = i + 1
+						goto found
+					}
+				}
+			}
+		}
+	found:
+	}
+
+	var locs []protocol.Location
+	for i := scopeStart; i < scopeEnd && i < len(lines); i++ {
+		line := lines[i]
+		offset := 0
+		for {
+			idx := strings.Index(line[offset:], varName)
+			if idx < 0 {
+				break
+			}
+			col := offset + idx
+			end := col + len(varName)
+			if end < len(line) && isWordChar(line[end]) {
+				offset = end
+				continue
+			}
+			locs = append(locs, protocol.Location{
+				URI: uri,
+				Range: protocol.Range{
+					Start: protocol.Position{Line: i, Character: col},
+					End:   protocol.Position{Line: i, Character: end},
+				},
+			})
+			offset = end
+		}
+	}
 	return locs
+}
+
+// findWordLocations finds all word-boundary occurrences of `word` on a line.
+func findWordLocations(uri, line string, lineNum int, word string) []protocol.Location {
+	var locs []protocol.Location
+	offset := 0
+	for {
+		idx := strings.Index(line[offset:], word)
+		if idx < 0 {
+			break
+		}
+		col := offset + idx
+		end := col + len(word)
+		// Word boundary before
+		if col > 0 && (isWordChar(line[col-1]) || line[col-1] == '$') {
+			offset = end
+			continue
+		}
+		// Word boundary after
+		if end < len(line) && isWordChar(line[end]) {
+			offset = end
+			continue
+		}
+		locs = append(locs, protocol.Location{
+			URI: uri,
+			Range: protocol.Range{
+				Start: protocol.Position{Line: lineNum, Character: col},
+				End:   protocol.Position{Line: lineNum, Character: end},
+			},
+		})
+		offset = end
+	}
+	return locs
+}
+
+// findAccessLocations finds occurrences of a needle (e.g. "->name") on a line
+// and returns locations pointing to the identifier part (after skipChars).
+func findAccessLocations(uri, line string, lineNum int, needle string, skipChars int, identName string) []protocol.Location {
+	var locs []protocol.Location
+	offset := 0
+	for {
+		idx := strings.Index(line[offset:], needle)
+		if idx < 0 {
+			break
+		}
+		col := offset + idx + skipChars
+		end := col + len(identName)
+		if end < len(line) && isWordChar(line[end]) {
+			offset = end
+			continue
+		}
+		locs = append(locs, protocol.Location{
+			URI: uri,
+			Range: protocol.Range{
+				Start: protocol.Position{Line: lineNum, Character: col},
+				End:   protocol.Position{Line: lineNum, Character: end},
+			},
+		})
+		offset = end
+	}
+	return locs
+}
+
+// readFileFromDisk reads a file from disk given its URI.
+func (a *Analyzer) readFileFromDisk(uri string) string {
+	path := strings.TrimPrefix(uri, "file://")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(content)
+}
+
+// deduplicateLocations removes duplicate locations (same URI, line, character).
+func deduplicateLocations(locs []protocol.Location) []protocol.Location {
+	type key struct {
+		uri   string
+		sLine int
+		sChar int
+	}
+	seen := make(map[key]bool, len(locs))
+	var result []protocol.Location
+	for _, loc := range locs {
+		k := key{loc.URI, loc.Range.Start.Line, loc.Range.Start.Character}
+		if !seen[k] {
+			seen[k] = true
+			result = append(result, loc)
+		}
+	}
+	return result
 }
 
 func (a *Analyzer) GetDocumentSymbols(uri, source string) []protocol.DocumentSymbol {
@@ -975,76 +1259,40 @@ func (a *Analyzer) renameVariable(uri, source string, pos protocol.Position, old
 }
 
 // renameSymbol renames a class, method, property, function, interface, enum, or trait
-// across the entire workspace.
+// across the entire workspace by finding all occurrences and generating TextEdits.
 func (a *Analyzer) renameSymbol(sym *symbols.Symbol, newName string, readDocument func(string) string) *protocol.WorkspaceEdit {
-	changes := make(map[string][]protocol.TextEdit)
-	oldName := sym.Name
-
-	// For properties, strip $ from the name for access sites
-	oldBare := strings.TrimPrefix(oldName, "$")
-	newBare := strings.TrimPrefix(newName, "$")
-
-	// Get all indexed file URIs
-	allURIs := a.index.GetAllFileURIs()
-
-	for _, fileURI := range allURIs {
-		source := readDocument(fileURI)
-		if source == "" {
-			continue
-		}
-		lines := strings.Split(source, "\n")
-		var fileEdits []protocol.TextEdit
-
-		for i, line := range lines {
-			switch sym.Kind {
-			case symbols.KindClass, symbols.KindInterface, symbols.KindEnum, symbols.KindTrait:
-				// Search for the short name as a word boundary
-				fileEdits = append(fileEdits, findWordEdits(line, i, oldName, newName)...)
-
-			case symbols.KindMethod:
-				// Search for ->oldName or ::oldName
-				fileEdits = append(fileEdits, findWordEdits(line, i, oldName, newName)...)
-
-			case symbols.KindProperty:
-				// In declaration: $oldName
-				fileEdits = append(fileEdits, findWordEdits(line, i, "$"+oldBare, "$"+newBare)...)
-				// In access: ->oldName (without $)
-				needle := "->" + oldBare
-				offset := 0
-				for {
-					idx := strings.Index(line[offset:], needle)
-					if idx < 0 {
-						break
-					}
-					col := offset + idx + 2 // skip "->"
-					end := col + len(oldBare)
-					if end < len(line) && isWordChar(line[end]) {
-						offset = end
-						continue
-					}
-					fileEdits = append(fileEdits, protocol.TextEdit{
-						Range: protocol.Range{
-							Start: protocol.Position{Line: i, Character: col},
-							End:   protocol.Position{Line: i, Character: end},
-						},
-						NewText: newBare,
-					})
-					offset = end
-				}
-
-			case symbols.KindFunction:
-				fileEdits = append(fileEdits, findWordEdits(line, i, oldName, newName)...)
-			}
-		}
-
-		if len(fileEdits) > 0 {
-			changes[fileURI] = fileEdits
-		}
-	}
-
-	if len(changes) == 0 {
+	locs := a.findSymbolOccurrences(sym, readDocument)
+	if len(locs) == 0 {
 		return nil
 	}
+
+	// Determine the replacement text based on what each location represents
+	isProperty := sym.Kind == symbols.KindProperty
+	bareName := strings.TrimPrefix(sym.Name, "$")
+	newBare := strings.TrimPrefix(newName, "$")
+
+	changes := make(map[string][]protocol.TextEdit)
+	for _, loc := range locs {
+		replaceText := newName
+		if isProperty {
+			// Check if this location is a $prop declaration or ->prop access
+			locLen := loc.Range.End.Character - loc.Range.Start.Character
+			if locLen == len(bareName) {
+				// Access form (->prop) — use bare name
+				replaceText = newBare
+			} else {
+				// Declaration form ($prop) — use $name
+				if !strings.HasPrefix(newName, "$") {
+					replaceText = "$" + newName
+				}
+			}
+		}
+		changes[loc.URI] = append(changes[loc.URI], protocol.TextEdit{
+			Range:   loc.Range,
+			NewText: replaceText,
+		})
+	}
+
 	return &protocol.WorkspaceEdit{Changes: changes}
 }
 

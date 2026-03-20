@@ -102,6 +102,10 @@ func (idx *Index) IndexFileWithSource(uri string, source string, src SymbolSourc
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	idx.removeFileSymbols(uri)
+	// Ensure the file is tracked even if it has no symbol declarations
+	if _, ok := idx.fileSymbols[uri]; !ok {
+		idx.fileSymbols[uri] = nil
+	}
 	ns := file.Namespace
 
 	resolve := func(name string) string {
