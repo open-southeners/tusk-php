@@ -1,6 +1,10 @@
 package parser
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/open-southeners/php-lsp/internal/types"
+)
 
 // Compatibility types kept for older callers that still expect the previous AST shape.
 type TypeNode struct {
@@ -229,18 +233,26 @@ func ParseDocBlock(raw string) *DocBlock {
 }
 
 // parseDocParam parses "@param Type $name Description" into structured DocParam.
+// Uses ExtractDocTypeString to correctly handle complex types like array{name: string, age: int}.
 func parseDocParam(value string) DocParam {
 	p := DocParam{}
-	parts := strings.Fields(value)
-	if len(parts) == 0 {
+	value = strings.TrimSpace(value)
+	if value == "" {
 		return p
 	}
-	idx := 0
-	// First token that starts with $ is the name; everything before is the type
-	if len(parts) > 0 && !strings.HasPrefix(parts[0], "$") {
-		p.Type = parts[0]
-		idx = 1
+	// If value starts with $, there's no type
+	if strings.HasPrefix(value, "$") {
+		parts := strings.Fields(value)
+		p.Name = parts[0]
+		if len(parts) > 1 {
+			p.Description = strings.Join(parts[1:], " ")
+		}
+		return p
 	}
+	// Extract type (handles nested braces/angles)
+	p.Type, value = types.ExtractDocTypeString(value)
+	parts := strings.Fields(value)
+	idx := 0
 	if idx < len(parts) && strings.HasPrefix(parts[idx], "$") {
 		p.Name = parts[idx]
 		idx++
@@ -252,15 +264,10 @@ func parseDocParam(value string) DocParam {
 }
 
 // parseDocReturn parses "@return Type Description" into structured DocReturn.
+// Uses ExtractDocTypeString to correctly handle complex types like array{key: string}.
 func parseDocReturn(value string) DocReturn {
 	r := DocReturn{}
-	parts := strings.SplitN(value, " ", 2)
-	if len(parts) >= 1 {
-		r.Type = parts[0]
-	}
-	if len(parts) >= 2 {
-		r.Description = strings.TrimSpace(parts[1])
-	}
+	r.Type, r.Description = types.ExtractDocTypeString(value)
 	return r
 }
 

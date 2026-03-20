@@ -8,6 +8,7 @@ import (
 	"github.com/open-southeners/php-lsp/internal/parser"
 	"github.com/open-southeners/php-lsp/internal/protocol"
 	"github.com/open-southeners/php-lsp/internal/symbols"
+	"github.com/open-southeners/php-lsp/internal/types"
 )
 
 type Provider struct {
@@ -62,6 +63,10 @@ func (p *Provider) GetCompletions(uri, source string, pos protocol.Position) []p
 	if len(words) >= 1 && words[0] == "use" {
 		currentNS := extractNamespace(source)
 		return p.completeUse(prefix, currentNS)
+	}
+	// Array key completion: $var['partial or $var["partial
+	if varName, partial, quote, ok := extractArrayKeyContext(prefix); ok {
+		return p.completeArrayKeys(source, pos, varName, partial, quote)
 	}
 	if filter, quoteCtx, ok := extractContainerArgContext(trimmed); ok {
 		currentNS := extractNamespace(source)
@@ -533,6 +538,419 @@ func (p *Provider) completeAttribute() []protocol.CompletionItem {
 		items = append(items, protocol.CompletionItem{Label: a[0], Kind: protocol.CompletionItemKindClass, Detail: a[1]})
 	}
 	return items
+}
+
+// extractArrayKeyContext detects if the cursor is inside an array key access:
+// $var['partial or $var["partial. Returns the variable name, partial key typed,
+// the quote character, and true if matched.
+func extractArrayKeyContext(prefix string) (varName, partial, quote string, ok bool) {
+	i := len(prefix) - 1
+
+	// Step 1: scan backward through partial key text (letters typed after the quote)
+	partialStart := i + 1
+	for i >= 0 && prefix[i] != '\'' && prefix[i] != '"' && prefix[i] != '[' {
+		i--
+	}
+	if i < 0 {
+		return
+	}
+
+	// Step 2: detect quote or bare bracket
+	if prefix[i] == '\'' || prefix[i] == '"' {
+		quote = string(prefix[i])
+		partial = prefix[i+1 : partialStart]
+		i-- // move before quote
+	} else if prefix[i] == '[' {
+		// Bare bracket, no quote yet
+		partial = ""
+		// Stay on [, will be consumed below
+	}
+
+	// Step 3: skip whitespace, then expect [
+	for i >= 0 && (prefix[i] == ' ' || prefix[i] == '\t') {
+		i--
+	}
+	if i < 0 {
+		return
+	}
+	if prefix[i] == '[' {
+		i-- // consume [
+	} else if quote == "" {
+		// Already consumed [ above in step 2
+	} else {
+		return // no [ found
+	}
+
+	// Step 4: skip whitespace before [
+	for i >= 0 && (prefix[i] == ' ' || prefix[i] == '\t') {
+		i--
+	}
+	if i < 0 {
+		return
+	}
+
+	// Step 5: extract $variable name backward
+	end := i + 1
+	for i >= 0 && isCompletionWordChar(prefix[i]) {
+		i--
+	}
+	if i >= 0 && prefix[i] == '$' {
+		varName = prefix[i:end]
+		ok = true
+	}
+	return
+}
+
+// completeArrayKeys provides completion items for array keys.
+// It resolves the variable's type from docblocks/params and extracts shape fields,
+// then falls back to scanning literal array assignments in scope.
+func (p *Provider) completeArrayKeys(source string, pos protocol.Position, varName, partial, quote string) []protocol.CompletionItem {
+	var keys []types.ShapeField
+
+	// 1. Try to resolve from docblock shapes (param type hints, @var annotations)
+	keys = p.resolveArrayKeysFromType(source, pos, varName)
+
+	// 2. Fall back to literal assignment scanning
+	if len(keys) == 0 {
+		keys = scanLiteralArrayKeys(source, pos, varName)
+	}
+
+	if len(keys) == 0 {
+		return nil
+	}
+
+	// Default quote
+	q := "'"
+	if quote == "\"" {
+		q = "\""
+	}
+
+	var items []protocol.CompletionItem
+	lpartial := strings.ToLower(partial)
+	for _, k := range keys {
+		if k.Key == "" {
+			continue // skip positional fields
+		}
+		if lpartial != "" && !strings.HasPrefix(strings.ToLower(k.Key), lpartial) {
+			continue
+		}
+		detail := k.Type
+		if k.Optional {
+			detail += " (optional)"
+		}
+
+		insertText := k.Key
+		if quote != "" {
+			// User already typed opening quote, add key + closing quote
+			insertText = k.Key + q
+		} else {
+			// No quote yet, wrap fully
+			insertText = q + k.Key + q
+		}
+
+		sortText := "0" + k.Key
+		if k.Optional {
+			sortText = "1" + k.Key
+		}
+
+		items = append(items, protocol.CompletionItem{
+			Label:      k.Key,
+			Kind:       protocol.CompletionItemKindProperty,
+			Detail:     detail,
+			InsertText: insertText,
+			SortText:   sortText,
+		})
+	}
+	return items
+}
+
+// resolveArrayKeysFromType resolves array shape keys from the variable's type
+// as declared in docblocks or parameter type hints.
+func (p *Provider) resolveArrayKeysFromType(source string, pos protocol.Position, varName string) []types.ShapeField {
+	file := parser.ParseFile(source)
+	if file == nil {
+		return nil
+	}
+
+	bare := strings.TrimPrefix(varName, "$")
+
+	// Check method/function parameters
+	for _, cls := range file.Classes {
+		for _, m := range cls.Methods {
+			if pos.Line >= m.StartLine {
+				// Check params with docblock shapes
+				if m.DocComment != "" {
+					if fields := extractShapeFromDocParams(m.DocComment, bare); len(fields) > 0 {
+						return fields
+					}
+				}
+				// Check param type hints (for shapes declared in type hint directly)
+				for _, param := range m.Params {
+					if param.Name == varName {
+						if fields := types.ParseArrayShape(param.Type.Name); len(fields) > 0 {
+							return fields
+						}
+					}
+				}
+			}
+		}
+	}
+	for _, fn := range file.Functions {
+		if pos.Line >= fn.StartLine {
+			if fn.DocComment != "" {
+				if fields := extractShapeFromDocParams(fn.DocComment, bare); len(fields) > 0 {
+					return fields
+				}
+			}
+			for _, param := range fn.Params {
+				if param.Name == varName {
+					if fields := types.ParseArrayShape(param.Type.Name); len(fields) > 0 {
+						return fields
+					}
+				}
+			}
+		}
+	}
+
+	// Check @var annotations above the variable assignment
+	lines := strings.Split(source, "\n")
+	for i := pos.Line; i >= 0 && i >= pos.Line-10; i-- {
+		if i >= len(lines) {
+			continue
+		}
+		line := strings.TrimSpace(lines[i])
+		// Look for @var array{...} $varName
+		if strings.Contains(line, "@var") && strings.Contains(line, varName) {
+			varIdx := strings.Index(line, "@var ")
+			if varIdx >= 0 {
+				rest := strings.TrimSpace(line[varIdx+5:])
+				typeStr, _ := types.ExtractDocTypeString(rest)
+				if fields := types.ParseArrayShape(typeStr); len(fields) > 0 {
+					return fields
+				}
+			}
+		}
+	}
+
+	// Check if variable comes from a function/method return with a shape
+	// Scan for $varName = someFunc() or $varName = $this->someMethod()
+	for i := pos.Line; i >= 0 && i >= pos.Line-200; i-- {
+		if i >= len(lines) {
+			continue
+		}
+		trimmed := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(trimmed, varName) {
+			continue
+		}
+		rest := strings.TrimSpace(trimmed[len(varName):])
+		if !strings.HasPrefix(rest, "=") {
+			continue
+		}
+		rhs := strings.TrimSpace(rest[1:])
+		// $var = $this->method() or $var = someFunc()
+		// Try to resolve the method/function return type
+		if retType := p.resolveCallReturnType(rhs, source); retType != "" {
+			if fields := types.ParseArrayShape(retType); len(fields) > 0 {
+				return fields
+			}
+		}
+		break
+	}
+
+	return nil
+}
+
+// extractShapeFromDocParams parses a docblock to find @param with array shape
+// for the given parameter name (without $).
+func extractShapeFromDocParams(docComment, paramBare string) []types.ShapeField {
+	doc := parser.ParseDocBlock(docComment)
+	if doc == nil {
+		return nil
+	}
+	target := "$" + paramBare
+	for _, param := range doc.Params {
+		if param.Name == target {
+			return types.ParseArrayShape(param.Type)
+		}
+	}
+	// Also check @var tags
+	if vars, ok := doc.Tags["var"]; ok {
+		for _, v := range vars {
+			typeStr, rest := types.ExtractDocTypeString(v)
+			if strings.Contains(rest, target) {
+				return types.ParseArrayShape(typeStr)
+			}
+		}
+	}
+	return nil
+}
+
+// resolveCallReturnType tries to resolve the return type of a simple call expression.
+// Handles: funcName(...), $this->method(...), ClassName::method(...)
+func (p *Provider) resolveCallReturnType(expr, source string) string {
+	expr = strings.TrimSuffix(strings.TrimSpace(expr), ";")
+	// Strip arguments: funcName(args) → funcName
+	if parenIdx := strings.Index(expr, "("); parenIdx > 0 {
+		expr = expr[:parenIdx]
+	}
+	expr = strings.TrimSpace(expr)
+
+	// $this->method
+	if strings.Contains(expr, "->") {
+		parts := strings.Split(expr, "->")
+		methodName := parts[len(parts)-1]
+		// Resolve $this type
+		file := parser.ParseFile(source)
+		if file != nil && len(file.Classes) > 0 {
+			cls := file.Classes[0]
+			classFQN := cls.FullName
+			if classFQN == "" && file.Namespace != "" {
+				classFQN = file.Namespace + "\\" + cls.Name
+			} else if classFQN == "" {
+				classFQN = cls.Name
+			}
+			// Check method return type and docblock
+			for _, member := range p.index.GetClassMembers(classFQN) {
+				if member.Name == methodName && member.Kind == symbols.KindMethod {
+					// Check docblock for shape return type
+					if member.DocComment != "" {
+						doc := parser.ParseDocBlock(member.DocComment)
+						if doc != nil && doc.Return.Type != "" {
+							return doc.Return.Type
+						}
+					}
+					return member.ReturnType
+				}
+			}
+		}
+	}
+
+	// Simple function name
+	funcName := expr
+	syms := p.index.LookupByName(funcName)
+	for _, sym := range syms {
+		if sym.Kind == symbols.KindFunction || sym.Kind == symbols.KindMethod {
+			if sym.DocComment != "" {
+				doc := parser.ParseDocBlock(sym.DocComment)
+				if doc != nil && doc.Return.Type != "" {
+					return doc.Return.Type
+				}
+			}
+			return sym.ReturnType
+		}
+	}
+	return ""
+}
+
+// scanLiteralArrayKeys scans the source for literal array assignments to the
+// given variable and extracts string keys.
+func scanLiteralArrayKeys(source string, pos protocol.Position, varName string) []types.ShapeField {
+	lines := strings.Split(source, "\n")
+	var keys []types.ShapeField
+	seen := make(map[string]bool)
+
+	// Scan backward for $varName = [...] or $varName = array(...)
+	for i := pos.Line; i >= 0 && i >= pos.Line-200; i-- {
+		if i >= len(lines) {
+			continue
+		}
+		trimmed := strings.TrimSpace(lines[i])
+
+		// Pattern: $varName = [...]
+		if strings.HasPrefix(trimmed, varName) {
+			rest := strings.TrimSpace(trimmed[len(varName):])
+			if strings.HasPrefix(rest, "=") {
+				rhs := strings.TrimSpace(rest[1:])
+				if strings.HasPrefix(rhs, "[") || strings.HasPrefix(strings.ToLower(rhs), "array(") {
+					// Scan lines forward to collect the full array literal
+					arrayKeys := extractKeysFromArrayLiteral(lines, i)
+					for _, k := range arrayKeys {
+						if !seen[k] {
+							seen[k] = true
+							keys = append(keys, types.ShapeField{Key: k})
+						}
+					}
+					break
+				}
+			}
+		}
+
+		// Pattern: $varName['key'] = ... (incremental building)
+		if strings.HasPrefix(trimmed, varName+"[") {
+			after := trimmed[len(varName)+1:]
+			if len(after) > 2 && (after[0] == '\'' || after[0] == '"') {
+				q := after[0]
+				endQ := strings.IndexByte(after[1:], q)
+				if endQ > 0 {
+					key := after[1 : endQ+1]
+					if !seen[key] {
+						seen[key] = true
+						keys = append(keys, types.ShapeField{Key: key})
+					}
+				}
+			}
+		}
+	}
+
+	// Also scan forward for incremental assignments
+	for i := pos.Line + 1; i < len(lines) && i <= pos.Line+50; i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(trimmed, varName+"[") {
+			after := trimmed[len(varName)+1:]
+			if len(after) > 2 && (after[0] == '\'' || after[0] == '"') {
+				q := after[0]
+				endQ := strings.IndexByte(after[1:], q)
+				if endQ > 0 {
+					key := after[1 : endQ+1]
+					if !seen[key] {
+						seen[key] = true
+						keys = append(keys, types.ShapeField{Key: key})
+					}
+				}
+			}
+		}
+	}
+
+	return keys
+}
+
+// extractKeysFromArrayLiteral extracts string keys from an array literal
+// starting at the given line. Handles multi-line arrays.
+func extractKeysFromArrayLiteral(lines []string, startLine int) []string {
+	var keys []string
+	depth := 0
+	started := false
+
+	for i := startLine; i < len(lines) && i < startLine+100; i++ {
+		line := lines[i]
+		for j := 0; j < len(line); j++ {
+			ch := line[j]
+			if ch == '[' || (ch == '(' && started) {
+				depth++
+				if !started {
+					started = true
+				}
+			} else if ch == ']' || (ch == ')' && started) {
+				depth--
+				if depth == 0 {
+					return keys
+				}
+			} else if depth == 1 && (ch == '\'' || ch == '"') {
+				// Extract string key
+				endQ := strings.IndexByte(line[j+1:], ch)
+				if endQ >= 0 {
+					key := line[j+1 : j+1+endQ]
+					// Check that this is a key (followed by =>)
+					rest := strings.TrimSpace(line[j+1+endQ+1:])
+					if strings.HasPrefix(rest, "=>") {
+						keys = append(keys, key)
+					}
+					j = j + 1 + endQ // skip past closing quote
+				}
+			}
+		}
+	}
+	return keys
 }
 
 // extractContainerArgContext detects whether the cursor is inside a container
