@@ -618,6 +618,8 @@ func (a *Analyzer) findSymbolOccurrences(sym *symbols.Symbol, readDocument func(
 			switch sym.Kind {
 			case symbols.KindClass, symbols.KindInterface, symbols.KindEnum, symbols.KindTrait:
 				locs = append(locs, findWordLocations(fileURI, line, i, name)...)
+				// Also find as last segment of FQN (e.g. \Cacheable in use App\Contracts\Cacheable)
+				locs = append(locs, findAccessLocations(fileURI, line, i, "\\"+name, 1, name)...)
 
 			case symbols.KindMethod:
 				locs = append(locs, findWordLocations(fileURI, line, i, name)...)
@@ -1031,43 +1033,40 @@ func getWordRangeAt(source string, pos protocol.Position) (string, protocol.Rang
 // the range and current name as a placeholder.
 func (a *Analyzer) PrepareRename(uri, source string, pos protocol.Position) *protocol.PrepareRenameResult {
 	word, wordRange := getWordRangeAt(source, pos)
-	if word == "" {
+	if word == "" || word == "$this" {
 		return nil
 	}
 
-	// Reject built-in symbols
-	file := parser.ParseFile(source)
-
-	// Determine what kind of symbol this is
-	// Variables are always renameable (local scope)
-	if strings.HasPrefix(word, "$") && word != "$this" {
-		return &protocol.PrepareRenameResult{Range: wordRange, Placeholder: word}
-	}
-
-	// Check if it's a known symbol in the index
-	fqn := ""
-	if file != nil {
-		fqn = a.resolveClassName(word, file)
-	}
-	if fqn == "" {
-		fqn = word
-	}
-
-	sym := a.index.Lookup(fqn)
-	if sym == nil {
-		// Try by short name
-		syms := a.index.LookupByName(word)
-		if len(syms) > 0 {
-			sym = syms[0]
-		}
-	}
+	// Try resolving as a symbol (class, method, property, function, etc.)
+	sym := a.resolveSymbolAtCursor(uri, source, pos, word)
 
 	// Reject built-ins
 	if sym != nil && sym.Source == symbols.SourceBuiltin {
 		return nil
 	}
 
-	// Check for member access context (method/property rename)
+	// Reject vendor symbols (renaming dependencies is not useful)
+	if sym != nil && sym.Source == symbols.SourceVendor {
+		return nil
+	}
+
+	// If resolved as a known symbol, allow rename
+	if sym != nil {
+		// For properties, show the placeholder with the appropriate form
+		placeholder := word
+		if sym.Kind == symbols.KindProperty && !strings.HasPrefix(word, "$") {
+			// Cursor is on ->prop access, show just the bare name
+			placeholder = strings.TrimPrefix(sym.Name, "$")
+		}
+		return &protocol.PrepareRenameResult{Range: wordRange, Placeholder: placeholder}
+	}
+
+	// Variables are always renameable (local scope)
+	if strings.HasPrefix(word, "$") {
+		return &protocol.PrepareRenameResult{Range: wordRange, Placeholder: word}
+	}
+
+	// Check for member access context (method/property on -> or ::)
 	lines := strings.Split(source, "\n")
 	if pos.Line >= 0 && pos.Line < len(lines) {
 		line := lines[pos.Line]
@@ -1081,12 +1080,8 @@ func (a *Analyzer) PrepareRename(uri, source string, pos protocol.Position) *pro
 		}
 	}
 
-	// If it's a symbol we can find, allow rename
-	if sym != nil {
-		return &protocol.PrepareRenameResult{Range: wordRange, Placeholder: word}
-	}
-
-	// Allow rename for identifiers that could be declarations in the current file
+	// Allow rename for identifiers declared in the current file's AST
+	file := parser.ParseFile(source)
 	if file != nil {
 		for _, cls := range file.Classes {
 			if cls.Name == word {
@@ -1094,11 +1089,6 @@ func (a *Analyzer) PrepareRename(uri, source string, pos protocol.Position) *pro
 			}
 			for _, m := range cls.Methods {
 				if m.Name == word {
-					return &protocol.PrepareRenameResult{Range: wordRange, Placeholder: word}
-				}
-			}
-			for _, p := range cls.Properties {
-				if p.Name == word || "$"+p.Name == word {
 					return &protocol.PrepareRenameResult{Range: wordRange, Placeholder: word}
 				}
 			}
@@ -1127,63 +1117,27 @@ func (a *Analyzer) PrepareRename(uri, source string, pos protocol.Position) *pro
 // readDocument is used to read file contents for files not open in the editor.
 func (a *Analyzer) Rename(uri, source string, pos protocol.Position, newName string, readDocument func(string) string) *protocol.WorkspaceEdit {
 	word, _ := getWordRangeAt(source, pos)
-	if word == "" {
+	if word == "" || word == "$this" {
 		return nil
 	}
 
-	// Variable rename — local scope only
-	if strings.HasPrefix(word, "$") && word != "$this" {
+	// Try resolving as a symbol first (handles properties, methods, classes, etc.)
+	sym := a.resolveSymbolAtCursor(uri, source, pos, word)
+
+	// If it's a known symbol, rename it across the workspace
+	if sym != nil {
+		if sym.Source == symbols.SourceBuiltin || sym.Source == symbols.SourceVendor {
+			return nil
+		}
+		return a.renameSymbol(sym, newName, readDocument)
+	}
+
+	// Fall back to variable rename (local scope)
+	if strings.HasPrefix(word, "$") {
 		return a.renameVariable(uri, source, pos, word, newName)
 	}
 
-	// Resolve the symbol to its FQN
-	file := parser.ParseFile(source)
-	fqn := ""
-
-	// Check if cursor is on a member access
-	lines := strings.Split(source, "\n")
-	if pos.Line >= 0 && pos.Line < len(lines) {
-		line := lines[pos.Line]
-		wordStart := pos.Character
-		for wordStart > 0 && isWordChar(line[wordStart-1]) {
-			wordStart--
-		}
-		if wordStart >= 2 {
-			before := line[:wordStart]
-			trimmed := strings.TrimRight(before, " \t")
-			if strings.HasSuffix(trimmed, "->") || strings.HasSuffix(trimmed, "::") {
-				classFQN := a.resolveAccessChain(line, wordStart, file, source, pos)
-				if classFQN != "" {
-					member := a.findMember(classFQN, word)
-					if member != nil {
-						fqn = member.FQN
-					}
-				}
-			}
-		}
-	}
-
-	if fqn == "" && file != nil {
-		fqn = a.resolveClassName(word, file)
-	}
-	if fqn == "" {
-		fqn = word
-	}
-
-	sym := a.index.Lookup(fqn)
-	if sym == nil {
-		syms := a.index.LookupByName(word)
-		if best := symbols.PickBestStandalone(syms, word); best != nil {
-			sym = best
-			fqn = sym.FQN
-		}
-	}
-
-	if sym == nil || sym.Source == symbols.SourceBuiltin {
-		return nil
-	}
-
-	return a.renameSymbol(sym, newName, readDocument)
+	return nil
 }
 
 // renameVariable renames a variable within its enclosing function scope.

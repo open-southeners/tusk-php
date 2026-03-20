@@ -211,6 +211,241 @@ class Caller {
 	}
 }
 
+func TestPrepareRenameRejectsVendor(t *testing.T) {
+	idx := symbols.NewIndex()
+	idx.RegisterBuiltins()
+	idx.IndexFileWithSource("file:///vendor/logger.php", `<?php
+namespace Monolog;
+class Logger {
+    public function info(string $msg): void {}
+}
+`, symbols.SourceVendor)
+	ca := container.NewContainerAnalyzer(idx, "/tmp", "none")
+	a := NewAnalyzer(idx, ca)
+
+	source := `<?php
+use Monolog\Logger;
+$l = new Logger();
+$l->info("hello");
+`
+	idx.IndexFileWithSource("file:///test.php", source, symbols.SourceProject)
+
+	// Trying to rename Logger (vendor symbol) should be rejected
+	result := a.PrepareRename("file:///test.php", source, protocol.Position{Line: 2, Character: 12})
+	if result != nil {
+		t.Error("should NOT allow renaming vendor class Logger")
+	}
+}
+
+func TestRenamePropertyFromDeclaration(t *testing.T) {
+	sources := map[string]string{
+		"file:///model.php": `<?php
+namespace App;
+class User {
+    public string $name;
+    public function getName(): string {
+        return $this->name;
+    }
+}
+`,
+		"file:///use.php": `<?php
+namespace App;
+use App\User;
+class Test {
+    public function run(User $u): void {
+        echo $u->name;
+    }
+}
+`,
+	}
+	a, reader := setupRenameAnalyzer(sources)
+
+	// Rename $name property from its declaration (cursor on $name)
+	edit := a.Rename("file:///model.php", sources["file:///model.php"],
+		protocol.Position{Line: 3, Character: 20}, "fullName", reader)
+	if edit == nil {
+		t.Fatal("expected WorkspaceEdit for property rename from declaration")
+	}
+
+	// Check model.php has both $fullName (declaration) and ->fullName (this access)
+	modelEdits := edit.Changes["file:///model.php"]
+	declFound := false
+	accessFound := false
+	for _, e := range modelEdits {
+		if strings.Contains(e.NewText, "$") {
+			declFound = true
+		}
+		if e.NewText == "fullName" {
+			accessFound = true
+		}
+	}
+	if !declFound {
+		t.Error("expected $fullName declaration edit in model.php")
+	}
+	if !accessFound {
+		t.Error("expected ->fullName access edit in model.php")
+	}
+
+	// Check use.php has ->fullName
+	useEdits := edit.Changes["file:///use.php"]
+	found := false
+	for _, e := range useEdits {
+		if e.NewText == "fullName" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected ->fullName access edit in use.php")
+	}
+}
+
+func TestRenamePropertyFromAccess(t *testing.T) {
+	sources := map[string]string{
+		"file:///model.php": `<?php
+namespace App;
+class User {
+    public string $email;
+}
+`,
+		"file:///use.php": `<?php
+namespace App;
+use App\User;
+class Test {
+    public function run(User $u): void {
+        echo $u->email;
+    }
+}
+`,
+	}
+	a, reader := setupRenameAnalyzer(sources)
+
+	// Rename from ->email access site
+	edit := a.Rename("file:///use.php", sources["file:///use.php"],
+		protocol.Position{Line: 5, Character: 18}, "address", reader)
+	if edit == nil {
+		t.Fatal("expected WorkspaceEdit for property rename from access site")
+	}
+
+	// Should update declaration in model.php
+	modelEdits := edit.Changes["file:///model.php"]
+	found := false
+	for _, e := range modelEdits {
+		if strings.Contains(e.NewText, "address") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected address replacement in model.php declaration")
+	}
+}
+
+func TestRenameInterfaceAcrossFiles(t *testing.T) {
+	sources := map[string]string{
+		"file:///iface.php": `<?php
+namespace App\Contracts;
+interface Cacheable {
+    public function getCacheKey(): string;
+}
+`,
+		"file:///impl.php": `<?php
+namespace App\Models;
+use App\Contracts\Cacheable;
+class Product implements Cacheable {
+    public function getCacheKey(): string { return 'product'; }
+}
+`,
+	}
+	a, reader := setupRenameAnalyzer(sources)
+
+	edit := a.Rename("file:///iface.php", sources["file:///iface.php"],
+		protocol.Position{Line: 2, Character: 12}, "Storable", reader)
+	if edit == nil {
+		t.Fatal("expected WorkspaceEdit for interface rename")
+	}
+
+	// Check impl.php has the rename in use and implements
+	implEdits := edit.Changes["file:///impl.php"]
+	count := 0
+	for _, e := range implEdits {
+		if e.NewText == "Storable" {
+			count++
+		}
+	}
+	if count < 2 {
+		t.Errorf("expected at least 2 replacements in impl.php (use + implements), got %d", count)
+	}
+}
+
+func TestRenameVariableWithDollarPrefix(t *testing.T) {
+	source := `<?php
+function test() {
+    $items = [];
+    foreach ($items as $item) {
+        echo $item;
+    }
+    return $items;
+}
+`
+	a, reader := setupRenameAnalyzer(map[string]string{"file:///test.php": source})
+
+	// Rename $items — user provides "entries" without $
+	edit := a.Rename("file:///test.php", source, protocol.Position{Line: 2, Character: 5}, "entries", reader)
+	if edit == nil {
+		t.Fatal("expected WorkspaceEdit for variable rename")
+	}
+
+	edits := edit.Changes["file:///test.php"]
+	for _, e := range edits {
+		if !strings.HasPrefix(e.NewText, "$") {
+			t.Errorf("expected $ prefix in variable rename, got %q", e.NewText)
+		}
+	}
+	// Should have 3 occurrences of $items (lines 2, 3, 6)
+	if len(edits) < 3 {
+		t.Errorf("expected at least 3 edits for $items, got %d", len(edits))
+	}
+}
+
+func TestRenameEnumAcrossFiles(t *testing.T) {
+	sources := map[string]string{
+		"file:///status.php": `<?php
+namespace App\Enums;
+enum Status: string {
+    case Active = 'active';
+    case Inactive = 'inactive';
+}
+`,
+		"file:///use.php": `<?php
+namespace App;
+use App\Enums\Status;
+class Order {
+    public Status $status;
+}
+`,
+	}
+	a, reader := setupRenameAnalyzer(sources)
+
+	edit := a.Rename("file:///status.php", sources["file:///status.php"],
+		protocol.Position{Line: 2, Character: 6}, "OrderStatus", reader)
+	if edit == nil {
+		t.Fatal("expected WorkspaceEdit for enum rename")
+	}
+
+	useEdits := edit.Changes["file:///use.php"]
+	found := false
+	for _, e := range useEdits {
+		if e.NewText == "OrderStatus" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected OrderStatus replacement in use.php")
+	}
+}
+
 func TestGetCodeActionsCopyNamespace(t *testing.T) {
 	source := `<?php
 namespace App\Models;
