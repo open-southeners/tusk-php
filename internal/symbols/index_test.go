@@ -445,3 +445,144 @@ class User {
 		}
 	})
 }
+
+func TestIndexIDEHelperFileMerge(t *testing.T) {
+	idx := NewIndex()
+
+	// First, index the real model file
+	idx.IndexFile("file:///app/Models/User.php", `<?php
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class User extends Model {
+    public string $email;
+
+    public function isAdmin(): bool {
+        return false;
+    }
+}
+`)
+
+	// Then, index the IDE helper file (re-declares same class with @property tags)
+	idx.IndexIDEHelperFile("file:///_ide_helper_models.php", `<?php
+namespace App\Models;
+
+/**
+ * @property int $id
+ * @property string $name
+ * @property string $email
+ * @property \DateTimeInterface $created_at
+ * @method static \Illuminate\Database\Eloquent\Builder query()
+ */
+class User extends Model {
+}
+`)
+
+	t.Run("real property preserved", func(t *testing.T) {
+		sym := idx.Lookup("App\\Models\\User::$email")
+		if sym == nil {
+			t.Fatal("expected real property '$email'")
+		}
+		if sym.IsVirtual {
+			t.Error("real property should not be marked as virtual")
+		}
+		if sym.URI != "file:///app/Models/User.php" {
+			t.Errorf("expected URI from model file, got %q", sym.URI)
+		}
+	})
+
+	t.Run("real method preserved", func(t *testing.T) {
+		sym := idx.Lookup("App\\Models\\User::isAdmin")
+		if sym == nil {
+			t.Fatal("expected real method 'isAdmin'")
+		}
+		if sym.IsVirtual {
+			t.Error("real method should not be marked as virtual")
+		}
+	})
+
+	t.Run("virtual properties from IDE helper merged", func(t *testing.T) {
+		for _, name := range []string{"$id", "$name", "$created_at"} {
+			sym := idx.Lookup("App\\Models\\User::" + name)
+			if sym == nil {
+				t.Errorf("expected virtual property %q from IDE helper", name)
+				continue
+			}
+			if !sym.IsVirtual {
+				t.Errorf("property %q should be virtual", name)
+			}
+			if sym.URI != "file:///_ide_helper_models.php" {
+				t.Errorf("expected URI from IDE helper, got %q", sym.URI)
+			}
+		}
+	})
+
+	t.Run("virtual method from IDE helper merged", func(t *testing.T) {
+		sym := idx.Lookup("App\\Models\\User::query")
+		if sym == nil {
+			t.Fatal("expected virtual method 'query' from IDE helper")
+		}
+		if !sym.IsVirtual {
+			t.Error("method 'query' should be virtual")
+		}
+	})
+
+	t.Run("IDE helper does not duplicate existing property", func(t *testing.T) {
+		// $email exists as real — IDE helper's @property string $email should be skipped
+		members := idx.GetClassMembers("App\\Models\\User")
+		emailCount := 0
+		for _, m := range members {
+			if m.Name == "$email" {
+				emailCount++
+			}
+		}
+		if emailCount != 1 {
+			t.Errorf("expected exactly 1 '$email' member, got %d", emailCount)
+		}
+	})
+
+	t.Run("class symbol not overwritten", func(t *testing.T) {
+		sym := idx.Lookup("App\\Models\\User")
+		if sym == nil {
+			t.Fatal("expected class symbol")
+		}
+		// Class should still point to the original model file
+		if sym.URI != "file:///app/Models/User.php" {
+			t.Errorf("expected URI from model file, got %q", sym.URI)
+		}
+	})
+}
+
+func TestIndexIDEHelperFileStandalone(t *testing.T) {
+	idx := NewIndex()
+
+	// Index IDE helper file when model hasn't been indexed yet
+	idx.IndexIDEHelperFile("file:///_ide_helper_models.php", `<?php
+namespace App\Models;
+
+/**
+ * @property int $id
+ * @property string $name
+ */
+class Post {
+}
+`)
+
+	t.Run("class created when not existing", func(t *testing.T) {
+		sym := idx.Lookup("App\\Models\\Post")
+		if sym == nil {
+			t.Fatal("expected class symbol created from IDE helper")
+		}
+	})
+
+	t.Run("virtual properties created", func(t *testing.T) {
+		sym := idx.Lookup("App\\Models\\Post::$id")
+		if sym == nil {
+			t.Fatal("expected virtual property '$id'")
+		}
+		if !sym.IsVirtual {
+			t.Error("expected virtual flag")
+		}
+	})
+}

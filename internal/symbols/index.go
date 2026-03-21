@@ -98,6 +98,122 @@ func (idx *Index) IndexFile(uri string, source string) {
 	idx.IndexFileWithSource(uri, source, SourceProject)
 }
 
+// IndexIDEHelperFile indexes an IDE helper file (e.g. _ide_helper_models.php) by
+// merging virtual members from @property/@method docblocks into existing class symbols.
+// Classes that don't already exist in the index are indexed normally.
+func (idx *Index) IndexIDEHelperFile(uri string, source string) {
+	file := parser.ParseFile(source)
+	if file == nil {
+		return
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	// Remove any previously indexed symbols from this URI (for re-indexing)
+	idx.removeFileSymbols(uri)
+	if _, ok := idx.fileSymbols[uri]; !ok {
+		idx.fileSymbols[uri] = nil
+	}
+
+	ns := file.Namespace
+	resolve := func(name string) string {
+		return resolveTypeName(name, ns, file.Uses)
+	}
+
+	for _, c := range file.Classes {
+		fqn := buildFQN(ns, c.Name)
+		existing := idx.symbols[fqn]
+		if existing != nil {
+			// Class already exists — only inject virtual members from this file's docblock
+			if c.DocComment != "" {
+				doc := parser.ParseDocBlock(c.DocComment)
+				if doc != nil {
+					for _, prop := range doc.Properties {
+						if prop.Name == "" {
+							continue
+						}
+						propName := "$" + prop.Name
+						if idx.symbols[fqn+"::"+propName] != nil {
+							continue
+						}
+						ps := &Symbol{
+							Name:       propName,
+							FQN:        fqn + "::" + propName,
+							Kind:       KindProperty,
+							URI:        uri,
+							Visibility: "public",
+							Type:       resolve(prop.Type),
+							ParentFQN:  fqn,
+							IsVirtual:  true,
+							DocComment: prop.Description,
+						}
+						existing.Children = append(existing.Children, ps)
+						idx.addSymbolWithSource(uri, ps, SourceProject)
+					}
+					for _, method := range doc.Methods {
+						if method.Name == "" {
+							continue
+						}
+						if idx.symbols[fqn+"::"+method.Name] != nil {
+							continue
+						}
+						ms := &Symbol{
+							Name:       method.Name,
+							FQN:        fqn + "::" + method.Name,
+							Kind:       KindMethod,
+							URI:        uri,
+							Visibility: "public",
+							ReturnType: resolve(method.ReturnType),
+							ParentFQN:  fqn,
+							IsVirtual:  true,
+							DocComment: method.Description,
+						}
+						if method.Params != "" {
+							ms.Params = parseDocMethodParams(method.Params, resolve)
+						}
+						existing.Children = append(existing.Children, ms)
+						idx.addSymbolWithSource(uri, ms, SourceProject)
+					}
+				}
+			}
+		} else {
+			// Class doesn't exist yet — index it normally
+			var resolvedImpls []string
+			for _, impl := range c.Implements {
+				resolvedImpls = append(resolvedImpls, resolve(impl))
+			}
+			sym := &Symbol{Name: c.Name, FQN: fqn, Kind: KindClass, URI: uri, DocComment: c.DocComment,
+				IsAbstract: c.IsAbstract, IsFinal: c.IsFinal, IsReadonly: c.IsReadonly,
+				Implements: resolvedImpls,
+				Range:      symRange(c.StartLine, c.StartCol, len(c.Name))}
+			if c.Extends != "" {
+				sym.Extends = resolve(c.Extends)
+			}
+			idx.addSymbolWithSource(uri, sym, SourceProject)
+			if c.Extends != "" {
+				idx.inheritanceMap[fqn] = sym.Extends
+			}
+			for _, impl := range resolvedImpls {
+				idx.implementsMap[fqn] = append(idx.implementsMap[fqn], impl)
+				idx.reverseImplementsMap[impl] = appendUnique(idx.reverseImplementsMap[impl], fqn)
+			}
+			for _, tr := range c.Traits {
+				idx.traitMap[fqn] = append(idx.traitMap[fqn], resolve(tr))
+			}
+			for _, prop := range c.Properties {
+				ps := &Symbol{Name: prop.Name, FQN: fqn + "::" + prop.Name, Kind: KindProperty, URI: uri,
+					Visibility: prop.Visibility, IsStatic: prop.IsStatic, Type: resolve(prop.Type.Name),
+					DocComment: prop.DocComment, ParentFQN: fqn,
+					Range: symRange(prop.StartLine, prop.StartCol, len(prop.Name))}
+				sym.Children = append(sym.Children, ps)
+				idx.addSymbolWithSource(uri, ps, SourceProject)
+			}
+			idx.indexMethods(uri, sym, fqn, c.Methods, SourceProject, resolve)
+			idx.indexVirtualMembers(uri, sym, SourceProject, resolve)
+		}
+	}
+}
+
 func (idx *Index) IndexFileWithSource(uri string, source string, src SymbolSource) {
 	file := parser.ParseFile(source)
 	if file == nil {

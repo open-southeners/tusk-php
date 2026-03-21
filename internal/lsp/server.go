@@ -285,7 +285,7 @@ func (s *Server) handleDidOpen(msg *jsonRPCMessage) {
 	s.docMu.Lock()
 	s.documents[params.TextDocument.URI] = params.TextDocument.Text
 	s.docMu.Unlock()
-	s.index.IndexFile(params.TextDocument.URI, params.TextDocument.Text)
+	s.indexFileByURI(params.TextDocument.URI, params.TextDocument.Text)
 	if s.cfg.DiagnosticsEnabled {
 		s.publishDiagnostics(params.TextDocument.URI, params.TextDocument.Text)
 	}
@@ -301,7 +301,7 @@ func (s *Server) handleDidChange(msg *jsonRPCMessage) {
 		s.docMu.Lock()
 		s.documents[params.TextDocument.URI] = source
 		s.docMu.Unlock()
-		s.index.IndexFile(params.TextDocument.URI, source)
+		s.indexFileByURI(params.TextDocument.URI, source)
 		if s.cfg.DiagnosticsEnabled {
 			s.publishDiagnostics(params.TextDocument.URI, source)
 		}
@@ -329,7 +329,7 @@ func (s *Server) handleDidSave(msg *jsonRPCMessage) {
 		s.docMu.Lock()
 		s.documents[uri] = *params.Text
 		s.docMu.Unlock()
-		s.index.IndexFile(uri, *params.Text)
+		s.indexFileByURI(uri, *params.Text)
 	}
 	s.goSafe("container.Analyze", s.container.Analyze)
 	if s.cfg.DiagnosticsEnabled {
@@ -521,9 +521,26 @@ func (s *Server) publishDiagnostics(uri, source string) {
 	s.sendNotification("textDocument/publishDiagnostics", map[string]interface{}{"uri": uri, "diagnostics": diagnostics})
 }
 
+// indexFileByURI indexes a file, using the IDE helper merge strategy for known IDE helper files.
+func (s *Server) indexFileByURI(uri string, source string) {
+	path := strings.TrimPrefix(uri, "file://")
+	if isIDEHelperFile(path) {
+		s.index.IndexIDEHelperFile(uri, source)
+	} else {
+		s.index.IndexFile(uri, source)
+	}
+}
+
+// isIDEHelperFile returns true if the filename matches known IDE helper file patterns.
+func isIDEHelperFile(path string) bool {
+	base := filepath.Base(path)
+	return base == "_ide_helper_models.php" || base == "_ide_helper.php"
+}
+
 func (s *Server) indexWorkspace() {
 	s.logger.Printf("Indexing workspace: %s", s.rootPath)
 	count := 0
+	var ideHelperFiles []string
 	filepath.Walk(s.rootPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
@@ -542,6 +559,11 @@ func (s *Server) indexWorkspace() {
 		if count >= s.cfg.MaxIndexFiles {
 			return filepath.SkipAll
 		}
+		// Defer IDE helper files so they merge into already-indexed model classes
+		if isIDEHelperFile(path) {
+			ideHelperFiles = append(ideHelperFiles, path)
+			return nil
+		}
 		if content, err := os.ReadFile(path); err == nil {
 			func() {
 				defer s.recoverPanic("indexWorkspace:" + path)
@@ -551,6 +573,20 @@ func (s *Server) indexWorkspace() {
 		}
 		return nil
 	})
+
+	// Index IDE helper files after all other project files so virtual members
+	// merge into existing class symbols rather than being overwritten.
+	for _, path := range ideHelperFiles {
+		if content, err := os.ReadFile(path); err == nil {
+			func() {
+				defer s.recoverPanic("indexIDEHelper:" + path)
+				s.index.IndexIDEHelperFile("file://"+path, string(content))
+				count++
+			}()
+			s.logger.Printf("Indexed IDE helper: %s", filepath.Base(path))
+		}
+	}
+
 	s.logger.Printf("Indexed %d PHP files", count)
 	s.sendNotification("window/logMessage", map[string]interface{}{"type": protocol.MessageTypeInfo, "message": fmt.Sprintf("PHP LSP: Indexed %d files (%s framework)", count, s.framework)})
 }
