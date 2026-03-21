@@ -117,8 +117,8 @@ func parseArrayKeyContext(prefix string) *arrayKeyContext {
 	return nil
 }
 
-func (p *Provider) completeArrayKeys(source string, pos protocol.Position, ctx *arrayKeyContext) []protocol.CompletionItem {
-	keys := p.resolveArrayKeysFromType(source, pos, ctx.VarName)
+func (p *Provider) completeArrayKeys(source string, pos protocol.Position, ctx *arrayKeyContext, file *parser.FileNode) []protocol.CompletionItem {
+	keys := p.resolveArrayKeysFromType(source, pos, ctx.VarName, file)
 	if len(keys) == 0 {
 		keys = scanLiteralArrayKeys(source, pos, ctx.VarName)
 	}
@@ -184,8 +184,7 @@ func (p *Provider) completeArrayKeys(source string, pos protocol.Position, ctx *
 	return items
 }
 
-func (p *Provider) resolveArrayKeysFromType(source string, pos protocol.Position, varName string) []types.ShapeField {
-	file := parser.ParseFile(source)
+func (p *Provider) resolveArrayKeysFromType(source string, pos protocol.Position, varName string, file *parser.FileNode) []types.ShapeField {
 	if file == nil {
 		return nil
 	}
@@ -265,7 +264,7 @@ func (p *Provider) resolveArrayKeysFromType(source string, pos protocol.Position
 			}
 		}
 
-		if retType := p.resolveCallReturnType(rhs, source); retType != "" {
+		if retType := p.resolveCallReturnType(rhs, source, file); retType != "" {
 			if fields := types.ParseArrayShape(retType); len(fields) > 0 {
 				return fields
 			}
@@ -331,7 +330,7 @@ func extractShapeFromDocParams(docComment, paramBare string) []types.ShapeField 
 	return nil
 }
 
-func (p *Provider) resolveCallReturnType(expr, source string) string {
+func (p *Provider) resolveCallReturnType(expr, source string, file *parser.FileNode) string {
 	expr = strings.TrimSuffix(strings.TrimSpace(expr), ";")
 	if parenIdx := strings.Index(expr, "("); parenIdx > 0 {
 		expr = expr[:parenIdx]
@@ -341,7 +340,6 @@ func (p *Provider) resolveCallReturnType(expr, source string) string {
 	if strings.Contains(expr, "->") {
 		parts := strings.Split(expr, "->")
 		methodName := parts[len(parts)-1]
-		file := parser.ParseFile(source)
 		if file != nil && len(file.Classes) > 0 {
 			cls := file.Classes[0]
 			classFQN := cls.FullName

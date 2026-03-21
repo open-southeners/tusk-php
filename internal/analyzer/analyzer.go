@@ -29,7 +29,7 @@ func (a *Analyzer) FindDefinition(uri, source string, pos protocol.Position) *pr
 		return nil
 	}
 	line := lines[pos.Line]
-	word := resolve.GetWordAt(source, pos)
+	word := resolve.WordAt(lines, pos)
 	if word == "" {
 		return nil
 	}
@@ -106,7 +106,7 @@ func (a *Analyzer) definitionForVariable(varName string, source string, pos prot
 	if file == nil {
 		return nil
 	}
-	typeName := a.resolver.ResolveVariableType(varName, source, pos, file)
+	typeName := a.resolver.ResolveVariableType(varName, resolve.SplitLines(source), pos, file)
 	if typeName == "" {
 		return nil
 	}
@@ -261,7 +261,7 @@ func (a *Analyzer) resolveAccessChain(line string, wordStart int, source string,
 	}
 
 	if strings.HasPrefix(target, "$") {
-		return a.resolver.ResolveVariableType(target, source, pos, file)
+		return a.resolver.ResolveVariableType(target, resolve.SplitLines(source), pos, file)
 	}
 
 	// Try as a class name (for static access like Logger::create)
@@ -323,13 +323,15 @@ func (a *Analyzer) FindAllReferences(uri, source string, pos protocol.Position, 
 		return nil
 	}
 
+	file := parser.ParseFile(source)
+
 	// Try to resolve as a symbol first — this handles properties ($name in declarations)
 	// and member access contexts before falling back to variable scope
-	sym := a.resolveSymbolAtCursor(uri, source, pos, word)
+	sym := a.resolveSymbolAtCursor(uri, source, pos, word, file)
 
 	// Variable references — local scope only (if not resolved as a property/symbol)
 	if sym == nil && strings.HasPrefix(word, "$") && word != "$this" {
-		return a.findVariableReferences(uri, source, pos, word)
+		return a.findVariableReferences(uri, source, pos, word, file)
 	}
 	if sym == nil {
 		// Fallback: definition-only lookup by name (original behavior)
@@ -347,8 +349,7 @@ func (a *Analyzer) FindAllReferences(uri, source string, pos protocol.Position, 
 
 // resolveSymbolAtCursor resolves the word at cursor to a Symbol, handling
 // member access chains, use imports, and namespace resolution.
-func (a *Analyzer) resolveSymbolAtCursor(uri, source string, pos protocol.Position, word string) *symbols.Symbol {
-	file := parser.ParseFile(source)
+func (a *Analyzer) resolveSymbolAtCursor(uri, source string, pos protocol.Position, word string, file *parser.FileNode) *symbols.Symbol {
 
 	// Check for member access context (->method or ::method)
 	lines := strings.Split(source, "\n")
@@ -469,8 +470,7 @@ func (a *Analyzer) findSymbolOccurrences(sym *symbols.Symbol, readDocument func(
 }
 
 // findVariableReferences finds all occurrences of a variable within its enclosing function scope.
-func (a *Analyzer) findVariableReferences(uri, source string, pos protocol.Position, varName string) []protocol.Location {
-	file := parser.ParseFile(source)
+func (a *Analyzer) findVariableReferences(uri, source string, pos protocol.Position, varName string, file *parser.FileNode) []protocol.Location {
 	if file == nil {
 		return nil
 	}
@@ -811,8 +811,10 @@ func (a *Analyzer) PrepareRename(uri, source string, pos protocol.Position) *pro
 		return nil
 	}
 
+	file := parser.ParseFile(source)
+
 	// Try resolving as a symbol (class, method, property, function, etc.)
-	sym := a.resolveSymbolAtCursor(uri, source, pos, word)
+	sym := a.resolveSymbolAtCursor(uri, source, pos, word, file)
 
 	// Reject built-ins
 	if sym != nil && sym.Source == symbols.SourceBuiltin {
@@ -855,7 +857,6 @@ func (a *Analyzer) PrepareRename(uri, source string, pos protocol.Position) *pro
 	}
 
 	// Allow rename for identifiers declared in the current file's AST
-	file := parser.ParseFile(source)
 	if file != nil {
 		for _, cls := range file.Classes {
 			if cls.Name == word {
@@ -895,8 +896,10 @@ func (a *Analyzer) Rename(uri, source string, pos protocol.Position, newName str
 		return nil
 	}
 
+	file := parser.ParseFile(source)
+
 	// Try resolving as a symbol first (handles properties, methods, classes, etc.)
-	sym := a.resolveSymbolAtCursor(uri, source, pos, word)
+	sym := a.resolveSymbolAtCursor(uri, source, pos, word, file)
 
 	// If it's a known symbol, rename it across the workspace
 	if sym != nil {
@@ -908,18 +911,17 @@ func (a *Analyzer) Rename(uri, source string, pos protocol.Position, newName str
 
 	// Fall back to variable rename (local scope)
 	if strings.HasPrefix(word, "$") {
-		return a.renameVariable(uri, source, pos, word, newName)
+		return a.renameVariable(uri, source, pos, word, newName, file)
 	}
 
 	return nil
 }
 
 // renameVariable renames a variable within its enclosing function scope.
-func (a *Analyzer) renameVariable(uri, source string, pos protocol.Position, oldName, newName string) *protocol.WorkspaceEdit {
+func (a *Analyzer) renameVariable(uri, source string, pos protocol.Position, oldName, newName string, file *parser.FileNode) *protocol.WorkspaceEdit {
 	if !strings.HasPrefix(newName, "$") {
 		newName = "$" + newName
 	}
-	file := parser.ParseFile(source)
 	if file == nil {
 		return nil
 	}

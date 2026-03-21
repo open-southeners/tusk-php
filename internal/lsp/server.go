@@ -36,7 +36,8 @@ type Server struct {
 	hover      *hover.Provider
 	diag       *diagnostics.Provider
 	analyzer   *analyzer.Analyzer
-	documents  sync.Map
+	docMu      sync.RWMutex
+	documents  map[string]string
 	rootPath   string
 	framework  string
 	reader     *bufio.Reader
@@ -46,7 +47,7 @@ type Server struct {
 }
 
 func NewServer(reader io.Reader, writer io.Writer, logger *log.Logger) *Server {
-	return &Server{cfg: config.DefaultConfig(), index: symbols.NewIndex(), reader: bufio.NewReader(reader), writer: writer, logger: logger}
+	return &Server{cfg: config.DefaultConfig(), index: symbols.NewIndex(), documents: make(map[string]string), reader: bufio.NewReader(reader), writer: writer, logger: logger}
 }
 
 func (s *Server) Run() error {
@@ -281,7 +282,9 @@ func (s *Server) handleDidOpen(msg *jsonRPCMessage) {
 	if json.Unmarshal(msg.Params, &params) != nil {
 		return
 	}
-	s.documents.Store(params.TextDocument.URI, params.TextDocument.Text)
+	s.docMu.Lock()
+	s.documents[params.TextDocument.URI] = params.TextDocument.Text
+	s.docMu.Unlock()
 	s.index.IndexFile(params.TextDocument.URI, params.TextDocument.Text)
 	if s.cfg.DiagnosticsEnabled {
 		s.publishDiagnostics(params.TextDocument.URI, params.TextDocument.Text)
@@ -295,7 +298,9 @@ func (s *Server) handleDidChange(msg *jsonRPCMessage) {
 	}
 	if len(params.ContentChanges) > 0 {
 		source := params.ContentChanges[len(params.ContentChanges)-1].Text
-		s.documents.Store(params.TextDocument.URI, source)
+		s.docMu.Lock()
+		s.documents[params.TextDocument.URI] = source
+		s.docMu.Unlock()
 		s.index.IndexFile(params.TextDocument.URI, source)
 		if s.cfg.DiagnosticsEnabled {
 			s.publishDiagnostics(params.TextDocument.URI, source)
@@ -308,7 +313,9 @@ func (s *Server) handleDidClose(msg *jsonRPCMessage) {
 	if json.Unmarshal(msg.Params, &params) != nil {
 		return
 	}
-	s.documents.Delete(params.TextDocument.URI)
+	s.docMu.Lock()
+	delete(s.documents, params.TextDocument.URI)
+	s.docMu.Unlock()
 	s.diag.ClearCache(params.TextDocument.URI)
 }
 
@@ -319,7 +326,9 @@ func (s *Server) handleDidSave(msg *jsonRPCMessage) {
 	}
 	uri := params.TextDocument.URI
 	if params.Text != nil {
-		s.documents.Store(uri, *params.Text)
+		s.docMu.Lock()
+		s.documents[uri] = *params.Text
+		s.docMu.Unlock()
 		s.index.IndexFile(uri, *params.Text)
 	}
 	s.goSafe("container.Analyze", s.container.Analyze)
@@ -481,8 +490,11 @@ func (s *Server) handleExecuteCommand(msg *jsonRPCMessage) {
 // falling back to disk if the document isn't open in the editor.
 func (s *Server) getDocumentReader() func(string) string {
 	return func(uri string) string {
-		if source, ok := s.documents.Load(uri); ok {
-			return source.(string)
+		s.docMu.RLock()
+		source, ok := s.documents[uri]
+		s.docMu.RUnlock()
+		if ok {
+			return source
 		}
 		// Fall back to reading from disk
 		path := strings.TrimPrefix(uri, "file://")
@@ -495,10 +507,10 @@ func (s *Server) getDocumentReader() func(string) string {
 }
 
 func (s *Server) getDocument(uri string) string {
-	if source, ok := s.documents.Load(uri); ok {
-		return source.(string)
-	}
-	return ""
+	s.docMu.RLock()
+	source := s.documents[uri]
+	s.docMu.RUnlock()
+	return source
 }
 
 func (s *Server) publishDiagnostics(uri, source string) {

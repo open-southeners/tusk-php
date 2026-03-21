@@ -38,9 +38,11 @@ func (p *Provider) GetHover(uri, source string, pos protocol.Position) *protocol
 	}
 	line := lines[pos.Line]
 
+	file := parser.ParseFile(source)
+
 	// Check for array key hover: $config['key'] or $config['db']['host'] — cursor on a key
 	if ctx, ok := getArrayKeyContext(line, pos.Character); ok {
-		return p.hoverArrayKey(source, pos, ctx)
+		return p.hoverArrayKey(source, pos, ctx, file)
 	}
 
 	// Check for config key hover: config('database.connections.mysql')
@@ -48,7 +50,7 @@ func (p *Provider) GetHover(uri, source string, pos protocol.Position) *protocol
 		return hover
 	}
 
-	word := resolve.GetWordAt(source, pos)
+	word := resolve.WordAt(lines, pos)
 	if word == "" {
 		return nil
 	}
@@ -58,11 +60,9 @@ func (p *Provider) GetHover(uri, source string, pos protocol.Position) *protocol
 		return nil
 	}
 
-	file := parser.ParseFile(source)
-
 	// Handle $variable hover
 	if strings.HasPrefix(word, "$") {
-		return p.hoverVariable(source, pos, file, word)
+		return p.hoverVariable(lines, pos, file, word)
 	}
 
 	// Handle self/static/parent keywords — resolve to enclosing class
@@ -98,7 +98,7 @@ func (p *Provider) GetHover(uri, source string, pos protocol.Position) *protocol
 	}
 
 	// Check for -> or :: access context
-	if classFQN := p.resolveAccessChain(line, wordStart, source, pos, file); classFQN != "" {
+	if classFQN := p.resolveAccessChain(line, wordStart, lines, pos, file); classFQN != "" {
 		if sym := p.resolver.FindMember(classFQN, word); sym != nil {
 			content := p.formatHover(sym)
 			if content != "" {
@@ -169,7 +169,7 @@ func (p *Provider) GetHover(uri, source string, pos protocol.Position) *protocol
 // returns the FQN of the class that owns the member at wordStart.
 // E.g. for "$this->logger->info()", if wordStart points at "info",
 // it resolves $this -> Service, finds property "logger" -> Logger type, returns Logger FQN.
-func (p *Provider) resolveAccessChain(line string, wordStart int, source string, pos protocol.Position, file *parser.FileNode) string {
+func (p *Provider) resolveAccessChain(line string, wordStart int, lines []string, pos protocol.Position, file *parser.FileNode) string {
 	i := wordStart
 
 	// Skip whitespace before the word
@@ -247,7 +247,7 @@ func (p *Provider) resolveAccessChain(line string, wordStart int, source string,
 
 	if strings.HasPrefix(target, "$") {
 		// Variable: resolve its type
-		typeFQN := p.resolver.ResolveVariableType(target, source, pos, file)
+		typeFQN := p.resolver.ResolveVariableType(target, lines, pos, file)
 		return typeFQN
 	}
 
@@ -262,7 +262,7 @@ func (p *Provider) resolveAccessChain(line string, wordStart int, source string,
 
 	// Otherwise, recursively resolve the chain to get the owner class,
 	// then find the target as a member and return its type.
-	ownerFQN := p.resolveAccessChain(line, i, source, pos, file)
+	ownerFQN := p.resolveAccessChain(line, i, lines, pos, file)
 	if ownerFQN == "" {
 		return ""
 	}
@@ -273,13 +273,13 @@ func (p *Provider) resolveAccessChain(line string, wordStart int, source string,
 	return p.resolver.MemberType(member, file)
 }
 
-func (p *Provider) hoverVariable(source string, pos protocol.Position, file *parser.FileNode, varName string) *protocol.Hover {
+func (p *Provider) hoverVariable(lines []string, pos protocol.Position, file *parser.FileNode, varName string) *protocol.Hover {
 	if file == nil {
 		return nil
 	}
 
 	// Try to resolve the variable type
-	typeName := p.resolver.ResolveVariableType(varName, source, pos, file)
+	typeName := p.resolver.ResolveVariableType(varName, lines, pos, file)
 	if typeName != "" {
 		var sb strings.Builder
 		sb.WriteString(fmt.Sprintf("**%s**\n", varName))
@@ -564,9 +564,9 @@ func getArrayKeyAt(line string, character int) (varName, key string, ok bool) {
 }
 
 // hoverArrayKey provides hover information for an array key, including nested access.
-func (p *Provider) hoverArrayKey(source string, pos protocol.Position, ctx *hoverArrayKeyContext) *protocol.Hover {
+func (p *Provider) hoverArrayKey(source string, pos protocol.Position, ctx *hoverArrayKeyContext, file *parser.FileNode) *protocol.Hover {
 	// Resolve top-level shape
-	fields := p.resolveArrayShape(source, pos, ctx.VarName)
+	fields := p.resolveArrayShape(source, pos, ctx.VarName, file)
 	if len(fields) == 0 {
 		fields = scanArrayKeysForHover(source, pos, ctx.VarName)
 	}
@@ -726,8 +726,7 @@ func (p *Provider) hoverConfigKey(line string, character int) *protocol.Hover {
 }
 
 // resolveArrayShape resolves shape fields for a variable from docblock annotations.
-func (p *Provider) resolveArrayShape(source string, pos protocol.Position, varName string) []types.ShapeField {
-	file := parser.ParseFile(source)
+func (p *Provider) resolveArrayShape(source string, pos protocol.Position, varName string, file *parser.FileNode) []types.ShapeField {
 	if file == nil {
 		return nil
 	}

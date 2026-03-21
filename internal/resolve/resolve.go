@@ -111,13 +111,26 @@ func (r *Resolver) FindMember(classFQN, memberName string) *symbols.Symbol {
 }
 
 // MemberType returns the resolved type of a member symbol (property type or method return type).
+// Falls back to @return/@var docblock annotations when no type hint is present.
 func (r *Resolver) MemberType(member *symbols.Symbol, file *parser.FileNode) string {
 	var typeName string
 	switch member.Kind {
 	case symbols.KindProperty:
 		typeName = member.Type
+		if typeName == "" && member.DocComment != "" {
+			if doc := parser.ParseDocBlock(member.DocComment); doc != nil {
+				if vars, ok := doc.Tags["var"]; ok && len(vars) > 0 {
+					typeName = strings.Fields(vars[0])[0]
+				}
+			}
+		}
 	case symbols.KindMethod:
 		typeName = member.ReturnType
+		if typeName == "" && member.DocComment != "" {
+			if doc := parser.ParseDocBlock(member.DocComment); doc != nil && doc.Return.Type != "" {
+				typeName = doc.Return.Type
+			}
+		}
 	default:
 		return ""
 	}
@@ -127,13 +140,25 @@ func (r *Resolver) MemberType(member *symbols.Symbol, file *parser.FileNode) str
 	if typeName == "self" || typeName == "static" {
 		return member.ParentFQN
 	}
+	// Strip leading backslash for FQN types from docblocks
+	typeName = strings.TrimPrefix(typeName, "\\")
+	// Handle union types: take the first non-null type
+	if strings.Contains(typeName, "|") {
+		for _, part := range strings.Split(typeName, "|") {
+			part = strings.TrimSpace(part)
+			if part != "" && part != "null" && part != "void" && part != "mixed" {
+				typeName = part
+				break
+			}
+		}
+	}
 	return r.ResolveClassName(typeName, file)
 }
 
 // ResolveVariableType infers the type of a variable from context:
 // method/function parameters, class properties, $var = new ClassName(...),
 // @var annotations, and literal type inference.
-func (r *Resolver) ResolveVariableType(varName string, source string, pos protocol.Position, file *parser.FileNode) string {
+func (r *Resolver) ResolveVariableType(varName string, lines []string, pos protocol.Position, file *parser.FileNode) string {
 	if file == nil {
 		return ""
 	}
@@ -172,7 +197,6 @@ func (r *Resolver) ResolveVariableType(varName string, source string, pos protoc
 		}
 	}
 
-	lines := strings.Split(source, "\n")
 	bare := strings.TrimPrefix(varName, "$")
 	varPrefix := "$" + bare
 
@@ -273,18 +297,28 @@ func IsWordChar(ch byte) bool {
 	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '\\'
 }
 
-// GetLineAt returns the line at the given 0-based line number.
-func GetLineAt(source string, line int) string {
-	lines := strings.Split(source, "\n")
+// SplitLines splits source into lines. Use this once per request,
+// then pass the result to LineAt/WordAt to avoid repeated splitting.
+func SplitLines(source string) []string {
+	return strings.Split(source, "\n")
+}
+
+// LineAt returns the line at the given 0-based index from pre-split lines.
+func LineAt(lines []string, line int) string {
 	if line >= 0 && line < len(lines) {
 		return lines[line]
 	}
 	return ""
 }
 
-// GetWordAt extracts the word at the given position, including $ prefix for variables.
-func GetWordAt(source string, pos protocol.Position) string {
-	lines := strings.Split(source, "\n")
+// GetLineAt returns the line at the given 0-based line number.
+func GetLineAt(source string, line int) string {
+	return LineAt(SplitLines(source), line)
+}
+
+// WordAt extracts the word at the given position from pre-split lines,
+// including $ prefix for variables.
+func WordAt(lines []string, pos protocol.Position) string {
 	if pos.Line < 0 || pos.Line >= len(lines) {
 		return ""
 	}
@@ -319,6 +353,11 @@ func GetWordAt(source string, pos protocol.Position) string {
 		return ""
 	}
 	return line[start:end]
+}
+
+// GetWordAt extracts the word at the given position, including $ prefix for variables.
+func GetWordAt(source string, pos protocol.Position) string {
+	return WordAt(SplitLines(source), pos)
 }
 
 // ExtractContainerCallArg extracts the string/class argument from a container

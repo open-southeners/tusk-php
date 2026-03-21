@@ -179,6 +179,74 @@ func TestDefinitionMethodChain(t *testing.T) {
 	}
 }
 
+func TestDefinitionStaticMethodChain(t *testing.T) {
+	idx := symbols.NewIndex()
+	// Model with query() that returns Builder (via @return, no type hint — like real Laravel)
+	idx.IndexFile("file:///vendor/Model.php", `<?php
+namespace Illuminate\Database\Eloquent;
+
+class Model {
+    /**
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public static function query() { return new Builder(); }
+}
+`)
+	// Builder with with() method
+	idx.IndexFile("file:///vendor/Builder.php", `<?php
+namespace Illuminate\Database\Eloquent;
+
+class Builder {
+    public function with(string $relation): self { return $this; }
+}
+`)
+	// Another class that also has a with() method (to prevent fallback by name)
+	idx.IndexFile("file:///vendor/AQuery.php", `<?php
+namespace App\Query;
+
+class AQuery {
+    public function with(): void {}
+}
+`)
+	// Add a global function named "with" to be picked as best standalone
+	idx.IndexFile("file:///vendor/helpers.php", `<?php
+function with(mixed $value): mixed { return $value; }
+`)
+	// Category extends Model
+	idx.IndexFile("file:///app/Category.php", `<?php
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Category extends Model {}
+`)
+
+	ca := container.NewContainerAnalyzer(idx, "/tmp", "none")
+	a := NewAnalyzer(idx, ca)
+
+	source := `<?php
+namespace App\Http\Controllers;
+
+use App\Models\Category;
+
+class CategoryController {
+    public function index() {
+        Category::query()->with('form');
+    }
+}
+`
+	// Go to definition on "with" — should find Builder::with via chain resolution,
+	// NOT via fallback (helpers.php has a global with() function that would win fallback)
+	pos := charPosOf(t, source, "with", "query()->with")
+	loc := a.FindDefinition("file:///controller.php", source, pos)
+	if loc == nil {
+		t.Fatal("expected definition location for with() on Builder")
+	}
+	if !strings.Contains(loc.URI, "Builder.php") {
+		t.Errorf("expected URI to contain Builder.php, got %s", loc.URI)
+	}
+}
+
 func TestDefinitionVendorMethod(t *testing.T) {
 	a, src := setupAnalyzer(t)
 	// $handler->handle(['message' => 'test']) — go to definition on "handle"

@@ -2,6 +2,7 @@ package symbols
 
 import (
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -75,6 +76,8 @@ type Index struct {
 	implementsMap        map[string][]string // class → interfaces it implements
 	reverseImplementsMap map[string][]string // interface → classes that implement it
 	traitMap             map[string][]string
+	sortedNames          []string // sorted lowercase name keys for binary search
+	sortedNamesDirty     bool     // rebuild flag
 }
 
 func NewIndex() *Index {
@@ -215,6 +218,7 @@ func (idx *Index) addSymbol(uri string, sym *Symbol) {
 	idx.symbols[sym.FQN] = sym
 	idx.nameIndex[sym.Name] = appendUnique(idx.nameIndex[sym.Name], sym.FQN)
 	idx.fileSymbols[uri] = append(idx.fileSymbols[uri], sym)
+	idx.sortedNamesDirty = true
 	// Index top-level symbols by their namespace
 	if isTopLevelSymbol(sym.Kind) {
 		idx.namespaceIndex[namespaceForFQN(sym.FQN)] = appendUnique(idx.namespaceIndex[namespaceForFQN(sym.FQN)], sym.FQN)
@@ -232,6 +236,7 @@ func (idx *Index) removeFileSymbols(uri string) {
 		if fqns, ok := idx.nameIndex[sym.Name]; ok {
 			idx.nameIndex[sym.Name] = removeFromSlice(fqns, sym.FQN)
 		}
+		idx.sortedNamesDirty = true
 		// Clean up namespace index
 		if isTopLevelSymbol(sym.Kind) {
 			ns := namespaceForFQN(sym.FQN)
@@ -313,14 +318,47 @@ func (idx *Index) LookupByName(name string) []*Symbol {
 func (idx *Index) SearchByPrefix(prefix string) []*Symbol {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	var results []*Symbol
-	lp := strings.ToLower(prefix)
-	for name, fqns := range idx.nameIndex {
-		if prefix == "" || strings.HasPrefix(strings.ToLower(name), lp) {
+
+	// Empty prefix: return all symbols
+	if prefix == "" {
+		var results []*Symbol
+		for _, fqns := range idx.nameIndex {
 			for _, fqn := range fqns {
 				if sym, ok := idx.symbols[fqn]; ok {
 					results = append(results, sym)
 				}
+			}
+		}
+		return results
+	}
+
+	// Rebuild sorted index if dirty
+	if idx.sortedNamesDirty || len(idx.sortedNames) == 0 {
+		idx.sortedNames = make([]string, 0, len(idx.nameIndex))
+		for name := range idx.nameIndex {
+			idx.sortedNames = append(idx.sortedNames, name)
+		}
+		sort.Slice(idx.sortedNames, func(i, j int) bool {
+			return strings.ToLower(idx.sortedNames[i]) < strings.ToLower(idx.sortedNames[j])
+		})
+		idx.sortedNamesDirty = false
+	}
+
+	// Binary search for the first matching prefix
+	lp := strings.ToLower(prefix)
+	start := sort.Search(len(idx.sortedNames), func(i int) bool {
+		return strings.ToLower(idx.sortedNames[i]) >= lp
+	})
+
+	var results []*Symbol
+	for i := start; i < len(idx.sortedNames); i++ {
+		name := idx.sortedNames[i]
+		if !strings.HasPrefix(strings.ToLower(name), lp) {
+			break
+		}
+		for _, fqn := range idx.nameIndex[name] {
+			if sym, ok := idx.symbols[fqn]; ok {
+				results = append(results, sym)
 			}
 		}
 	}
