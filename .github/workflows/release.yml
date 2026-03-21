@@ -57,9 +57,9 @@ jobs:
           sed -i -E '0,/^version = ".*"$/s//version = "'"$VERSION"'"/' editors/zed/Cargo.toml
           sed -i -E '0,/^version = ".*"$/s//version = "'"$VERSION"'"/' editors/zed/extension.toml
 
-      - name: Extract release notes from changelog
-        id: changelog
-        uses: release-flow/keep-a-changelog-action@v2
+      - name: Get release info
+        id: query-release-info
+        uses: release-flow/keep-a-changelog-action@v3
         with:
           command: query
           changelog: CHANGELOG.md
@@ -76,7 +76,7 @@ jobs:
 
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
             IFS='/' read -r goos goarch <<< "$target"
-            output="dist/php-lsp-${goos}-${goarch}"
+            output="dist/tusk-php-${goos}-${goarch}"
             if [[ "$goos" == "windows" ]]; then
               output+=".exe"
             fi
@@ -110,17 +110,17 @@ jobs:
             zip -r "tusk-php-zed-${VERSION}.zip" "tusk-php-zed-${VERSION}"
           )
 
-      - name: Publish GitHub release
+      - name: Publish to Github releases
         uses: softprops/action-gh-release@v2
         with:
           name: php-lsp ${{ github.ref_name }}
-          body: ${{ steps.changelog.outputs.release-notes }}
+          body: ${{ steps.query-release-info.outputs.release-notes }}
           files: |
-            dist/php-lsp-linux-amd64
-            dist/php-lsp-linux-arm64
-            dist/php-lsp-darwin-amd64
-            dist/php-lsp-darwin-arm64
-            dist/php-lsp-windows-amd64.exe
+            dist/tusk-php-linux-amd64
+            dist/tusk-php-linux-arm64
+            dist/tusk-php-darwin-amd64
+            dist/tusk-php-darwin-arm64
+            dist/tusk-php-windows-amd64.exe
             dist/tusk-php-vscode-${{ steps.version.outputs.value }}.vsix
             dist/tusk-php-zed-${{ steps.version.outputs.value }}.zip
 
