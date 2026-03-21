@@ -411,6 +411,61 @@ App\Models\User::`
 	})
 }
 
+func TestCompleteStaticMethodChain(t *testing.T) {
+	idx := symbols.NewIndex()
+	idx.IndexFile("file:///vendor/Model.php", `<?php
+namespace Illuminate\Database\Eloquent;
+
+class Model {
+    /**
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public static function query() { return new Builder(); }
+}
+`)
+	idx.IndexFile("file:///vendor/Builder.php", `<?php
+namespace Illuminate\Database\Eloquent;
+
+class Builder {
+    public function with(string $relation): self { return $this; }
+    public function where(string $col): self { return $this; }
+}
+`)
+	idx.IndexFile("file:///app/Category.php", `<?php
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Category extends Model {}
+`)
+	p := NewProvider(idx, nil, "")
+
+	source := `<?php
+namespace App\Http\Controllers;
+
+use App\Models\Category;
+
+class CategoryController {
+    public function index() {
+        Category::query()->
+    }
+}
+`
+	// Cursor after "Category::query()->" (8 spaces + 19 chars = 27)
+	pos := protocol.Position{Line: 7, Character: 27}
+	items := p.GetCompletions("file:///controller.php", source, pos)
+	labels := map[string]bool{}
+	for _, item := range items {
+		labels[item.Label] = true
+	}
+	if !labels["with"] {
+		t.Error("expected 'with' method from Builder via Category::query()->")
+	}
+	if !labels["where"] {
+		t.Error("expected 'where' method from Builder via Category::query()->")
+	}
+}
+
 func TestCompleteFQNNewAssignmentMemberAccess(t *testing.T) {
 	idx := symbols.NewIndex()
 	idx.IndexFile("file:///action.php", `<?php

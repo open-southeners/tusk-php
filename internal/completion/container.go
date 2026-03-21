@@ -14,7 +14,7 @@ import (
 // like app('request'), app(Request::class), resolve('cache'), $container->get('log')
 // and returns the concrete FQN from the container bindings.
 // config() with no args returns Repository; config('key') returns mixed (no resolution).
-func (p *Provider) resolveContainerCallType(expr, source string) string {
+func (p *Provider) resolveContainerCallType(expr, source string, file *parser.FileNode) string {
 	// Special case: config() with no args returns the Repository instance
 	t := strings.TrimSpace(expr)
 	if t == "config()" {
@@ -35,7 +35,7 @@ func (p *Provider) resolveContainerCallType(expr, source string) string {
 	// Resolve ::class references: "Request::class" → FQN
 	if strings.HasSuffix(arg, "::class") {
 		className := strings.TrimSuffix(arg, "::class")
-		arg = p.resolveClassNameFromSource(className, source)
+		arg = p.resolveClassNameFromSource(className, source, file)
 	}
 	if binding := p.container.ResolveDependency(arg); binding != nil {
 		return binding.Concrete
@@ -82,7 +82,7 @@ func extractContainerArgContext(trimmed string) (string, string, bool) {
 // quoteCtx is the opening quote character already typed ("'" or "\""), or empty
 // if the user hasn't typed a quote yet. String bindings get wrapped in quotes
 // accordingly.
-func (p *Provider) completeContainerResolve(source, filter, currentNS, quoteCtx string) []protocol.CompletionItem {
+func (p *Provider) completeContainerResolve(source, filter, currentNS, quoteCtx string, file *parser.FileNode) []protocol.CompletionItem {
 	var items []protocol.CompletionItem
 	lfilter := strings.ToLower(filter)
 
@@ -136,7 +136,6 @@ func (p *Provider) completeContainerResolve(source, filter, currentNS, quoteCtx 
 				}
 			}
 			insertName := sym.FQN
-			file := parser.ParseFile(source)
 			if file != nil {
 				for _, u := range file.Uses {
 					if u.FullName == sym.FQN {

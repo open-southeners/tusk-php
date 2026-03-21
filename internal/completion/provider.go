@@ -37,22 +37,24 @@ func (p *Provider) GetCompletions(uri, source string, pos protocol.Position) []p
 	}
 	trimmed := strings.TrimSpace(prefix)
 
+	file := parser.ParseFile(source)
+
 	if strings.HasSuffix(trimmed, "->") || strings.HasSuffix(trimmed, "?->") {
-		return p.completeMemberAccess(uri, source, pos, prefix)
+		return p.completeMemberAccess(uri, source, pos, prefix, file)
 	}
 	// Container argument context takes priority over :: detection
 	// (e.g. app(Request::class) should not trigger static access)
 	if _, _, isContainer := extractContainerArgContext(trimmed); !isContainer {
 		if strings.HasSuffix(trimmed, "::") {
-			return p.completeStaticAccess(source, prefix, pos)
+			return p.completeStaticAccess(source, prefix, pos, file)
 		}
 		// Typing after -> or :: (e.g. "$foo->ba" or "Foo::cr")
 		if memberCtx, filter := detectMemberContext(trimmed); memberCtx != "" {
 			if strings.Contains(memberCtx, "::") {
-				items := p.completeStaticAccess(source, memberCtx, pos)
+				items := p.completeStaticAccess(source, memberCtx, pos, file)
 				return filterByPrefix(items, filter)
 			}
-			items := p.completeMemberAccess(uri, source, pos, memberCtx)
+			items := p.completeMemberAccess(uri, source, pos, memberCtx, file)
 			return filterByPrefix(items, filter)
 		}
 	}
@@ -74,7 +76,7 @@ func (p *Provider) GetCompletions(uri, source string, pos protocol.Position) []p
 	}
 	// Array key completion: $var['partial or $var['key1']['partial (nested)
 	if ctx := parseArrayKeyContext(prefix); ctx != nil {
-		return p.completeArrayKeys(source, pos, ctx)
+		return p.completeArrayKeys(source, pos, ctx, file)
 	}
 	// Config result array access: config('database')['connections']['
 	if ctx := parseConfigResultArrayContext(prefix); ctx != nil {
@@ -86,7 +88,7 @@ func (p *Provider) GetCompletions(uri, source string, pos protocol.Position) []p
 	}
 	if filter, quoteCtx, ok := extractContainerArgContext(trimmed); ok {
 		currentNS := extractNamespace(source)
-		return p.completeContainerResolve(source, filter, currentNS, quoteCtx)
+		return p.completeContainerResolve(source, filter, currentNS, quoteCtx, file)
 	}
 	currentNS := extractNamespace(source)
 	// Detect namespace path typing (contains \)
@@ -101,7 +103,7 @@ func (p *Provider) GetCompletions(uri, source string, pos protocol.Position) []p
 		lastWord = w[len(w)-1]
 	}
 	if lastWord == "" || strings.HasPrefix("$this", strings.ToLower(lastWord)) {
-		if file := parser.ParseFile(source); file != nil {
+		if file != nil {
 			if resolve.FindEnclosingClass(file, pos) != "" {
 				items = append(items, protocol.CompletionItem{
 					Label:    "$this",
@@ -115,8 +117,8 @@ func (p *Provider) GetCompletions(uri, source string, pos protocol.Position) []p
 	return items
 }
 
-func (p *Provider) completeMemberAccess(uri, source string, pos protocol.Position, prefix string) []protocol.CompletionItem {
-	typeName := p.resolveChainType(source, prefix, "->", pos)
+func (p *Provider) completeMemberAccess(uri, source string, pos protocol.Position, prefix string, file *parser.FileNode) []protocol.CompletionItem {
+	typeName := p.resolveChainType(source, prefix, "->", pos, file)
 	if typeName == "" {
 		return nil
 	}
@@ -145,8 +147,8 @@ func (p *Provider) completeMemberAccess(uri, source string, pos protocol.Positio
 	return items
 }
 
-func (p *Provider) completeStaticAccess(source, prefix string, pos protocol.Position) []protocol.CompletionItem {
-	typeName := p.resolveChainType(source, prefix, "::", pos)
+func (p *Provider) completeStaticAccess(source, prefix string, pos protocol.Position, file *parser.FileNode) []protocol.CompletionItem {
+	typeName := p.resolveChainType(source, prefix, "::", pos, file)
 	if typeName == "" {
 		return nil
 	}
@@ -181,7 +183,7 @@ func (p *Provider) completeStaticAccess(source, prefix string, pos protocol.Posi
 // Handles: $var->, $this->, self::, static::, parent::, ClassName::,
 // $var::, new ClassName()->, (new ClassName)->, and method chains.
 // Also handles container calls: app('request')->, app(Request::class)->, resolve(...)->
-func (p *Provider) resolveChainType(source, prefix, op string, pos protocol.Position) string {
+func (p *Provider) resolveChainType(source, prefix, op string, pos protocol.Position, file *parser.FileNode) string {
 	idx := strings.LastIndex(prefix, op)
 	if idx < 0 {
 		return ""
@@ -191,7 +193,7 @@ func (p *Provider) resolveChainType(source, prefix, op string, pos protocol.Posi
 	// Check for container call pattern: app('key'), app(Class::class), resolve('key')
 	// Also blocks config('key')-> which returns mixed, not a class
 	if op == "->" {
-		if concrete := p.resolveContainerCallType(before, source); concrete != "" {
+		if concrete := p.resolveContainerCallType(before, source, file); concrete != "" {
 			if concrete == "-" {
 				return "" // signal: known call returning mixed, stop resolution
 			}
@@ -202,7 +204,7 @@ func (p *Provider) resolveChainType(source, prefix, op string, pos protocol.Posi
 	// Check for "new ClassName(...)" pattern before ->
 	if op == "->" {
 		if newClass := extractNewClass(before); newClass != "" {
-			return p.resolveClassNameFromSource(newClass, source)
+			return p.resolveClassNameFromSource(newClass, source, file)
 		}
 	}
 
@@ -211,8 +213,6 @@ func (p *Provider) resolveChainType(source, prefix, op string, pos protocol.Posi
 	if target == "" {
 		return ""
 	}
-
-	file := parser.ParseFile(source)
 
 	switch target {
 	case "$this", "self", "static":
@@ -235,16 +235,78 @@ func (p *Provider) resolveChainType(source, prefix, op string, pos protocol.Posi
 
 	// $variable-> or $variable::
 	if strings.HasPrefix(target, "$") {
-		return p.resolver.ResolveVariableType(target, source, pos, file)
+		return p.resolver.ResolveVariableType(target, resolve.SplitLines(source), pos, file)
 	}
 
 	// ClassName:: or ClassName->  (static access or after new)
-	return p.resolveClassNameFromSource(target, source)
+	fqn := p.resolveClassNameFromSource(target, source, file)
+	if fqn != "" && p.index.Lookup(fqn) != nil {
+		sym := p.index.Lookup(fqn)
+		if sym.Kind == symbols.KindClass || sym.Kind == symbols.KindInterface || sym.Kind == symbols.KindEnum || sym.Kind == symbols.KindTrait {
+			return fqn
+		}
+	}
+
+	// Method chain resolution: e.g. "Category::query()" where target="query"
+	// Resolve the receiver before target, find target as a method, return its type.
+	if file != nil {
+		ownerFQN := p.resolveChainOwner(before, target, source, pos, file)
+		if ownerFQN != "" {
+			if member := p.resolver.FindMember(ownerFQN, target); member != nil {
+				return p.resolver.MemberType(member, file)
+			}
+		}
+	}
+	return ""
+}
+
+// resolveChainOwner resolves the class FQN that owns the given method/property
+// in a chained call expression. For "Category::query()", it resolves "Category".
+func (p *Provider) resolveChainOwner(expr, target, source string, pos protocol.Position, file *parser.FileNode) string {
+	// Strip the target and its parens from the end of the expression
+	// e.g. "Category::query()" → need to find "Category::"
+	i := len(expr)
+	// Skip trailing whitespace
+	for i > 0 && (expr[i-1] == ' ' || expr[i-1] == '\t') {
+		i--
+	}
+	// Skip closing paren if present
+	if i > 0 && expr[i-1] == ')' {
+		depth := 1
+		i--
+		for i > 0 && depth > 0 {
+			i--
+			if expr[i] == ')' {
+				depth++
+			} else if expr[i] == '(' {
+				depth--
+			}
+		}
+		// Skip whitespace before paren
+		for i > 0 && (expr[i-1] == ' ' || expr[i-1] == '\t') {
+			i--
+		}
+	}
+	// Skip the target identifier
+	for i > 0 && resolve.IsWordChar(expr[i-1]) {
+		i--
+	}
+	// Check for -> or :: operator before the target
+	if i >= 2 && expr[i-2] == '-' && expr[i-1] == '>' {
+		receiver := strings.TrimSpace(expr[:i-2])
+		return p.resolveChainType(source, receiver+"->", "->", pos, file)
+	}
+	if i >= 2 && expr[i-2] == ':' && expr[i-1] == ':' {
+		receiver := strings.TrimSpace(expr[:i-2])
+		// Resolve the receiver class name
+		return p.resolveClassNameFromSource(receiver, source, file)
+	}
+	return ""
 }
 
 // resolveClassNameFromSource resolves a short or FQN class name using
 // the source file's use statements and namespace.
-func (p *Provider) resolveClassNameFromSource(name, source string) string {
+func (p *Provider) resolveClassNameFromSource(name, source string, file *parser.FileNode) string {
 	if name == "" {
 		return ""
 	}
@@ -257,7 +319,6 @@ func (p *Provider) resolveClassNameFromSource(name, source string) string {
 		return fqn
 	}
 
-	file := parser.ParseFile(source)
 	if file == nil {
 		// Try direct lookup by name
 		syms := p.index.LookupByName(name)
