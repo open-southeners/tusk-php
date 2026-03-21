@@ -15,6 +15,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+          coverage: none
+
+      - name: Install Laravel fixture dependencies
+        run: composer install --working-dir testdata/laravel --no-interaction --no-progress --prefer-dist --no-scripts
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:

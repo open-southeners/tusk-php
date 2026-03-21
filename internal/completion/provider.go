@@ -132,7 +132,7 @@ func (p *Provider) completeMemberAccess(uri, source string, pos protocol.Positio
 		if m.IsStatic || m.Visibility == "private" {
 			continue
 		}
-		item := protocol.CompletionItem{Label: m.Name, Detail: formatDetail(m)}
+		item := protocol.CompletionItem{Label: m.Name, Detail: formatDetail(m), Documentation: formatDocumentation(m)}
 		switch m.Kind {
 		case symbols.KindMethod:
 			item.Kind = protocol.CompletionItemKindMethod
@@ -157,7 +157,7 @@ func (p *Provider) completeStaticAccess(source, prefix string, pos protocol.Posi
 		if !m.IsStatic && m.Kind != symbols.KindConstant && m.Kind != symbols.KindEnumCase {
 			continue
 		}
-		item := protocol.CompletionItem{Label: m.Name, Detail: formatDetail(m)}
+		item := protocol.CompletionItem{Label: m.Name, Detail: formatDetail(m), Documentation: formatDocumentation(m)}
 		switch m.Kind {
 		case symbols.KindMethod:
 			item.Kind = protocol.CompletionItemKindMethod
@@ -788,16 +788,29 @@ func symKind(kind symbols.SymbolKind) protocol.CompletionItemKind {
 }
 
 func formatDetail(sym *symbols.Symbol) string {
-	if sym.Kind == symbols.KindMethod {
+	switch sym.Kind {
+	case symbols.KindMethod:
 		return fmtSig(sym)
-	}
-	if sym.Kind == symbols.KindProperty {
-		if sym.Type != "" {
-			return sym.Type
+	case symbols.KindProperty:
+		typ := sym.Type
+		if typ == "" {
+			typ = docblockVarType(sym)
 		}
-		return "mixed"
+		if typ == "" {
+			typ = "mixed"
+		}
+		if sym.ParentFQN != "" {
+			return typ + "  — " + shortName(sym.ParentFQN)
+		}
+		return typ
+	case symbols.KindConstant, symbols.KindEnumCase:
+		if sym.ParentFQN != "" {
+			return sym.ParentFQN
+		}
+		return sym.FQN
+	default:
+		return sym.FQN
 	}
-	return sym.FQN
 }
 
 func fmtSig(sym *symbols.Symbol) string {
@@ -813,9 +826,70 @@ func fmtSig(sym *symbols.Symbol) string {
 		s += p.Name
 		params = append(params, s)
 	}
-	ret := sym.ReturnType
-	if ret == "" {
-		ret = "mixed"
+	ret := resolveReturnType(sym)
+	origin := ""
+	if sym.ParentFQN != "" {
+		origin = "  — " + shortName(sym.ParentFQN)
 	}
-	return fmt.Sprintf("(%s): %s", strings.Join(params, ", "), ret)
+	return fmt.Sprintf("(%s): %s%s", strings.Join(params, ", "), ret, origin)
+}
+
+// resolveReturnType gets the return type from the type hint or @return docblock.
+func resolveReturnType(sym *symbols.Symbol) string {
+	if sym.ReturnType != "" {
+		return sym.ReturnType
+	}
+	if sym.DocComment != "" {
+		if doc := parser.ParseDocBlock(sym.DocComment); doc != nil && doc.Return.Type != "" {
+			t := doc.Return.Type
+			// Strip leading backslash and generic parameters for display
+			t = strings.TrimPrefix(t, "\\")
+			if idx := strings.IndexByte(t, '<'); idx > 0 {
+				t = t[:idx]
+			}
+			return t
+		}
+	}
+	return "mixed"
+}
+
+// docblockVarType extracts the type from a @var docblock annotation.
+func docblockVarType(sym *symbols.Symbol) string {
+	if sym.DocComment == "" {
+		return ""
+	}
+	doc := parser.ParseDocBlock(sym.DocComment)
+	if doc == nil {
+		return ""
+	}
+	if vars, ok := doc.Tags["var"]; ok && len(vars) > 0 {
+		fields := strings.Fields(vars[0])
+		if len(fields) > 0 {
+			t := fields[0]
+			t = strings.TrimPrefix(t, "\\")
+			if idx := strings.IndexByte(t, '<'); idx > 0 {
+				t = t[:idx]
+			}
+			return t
+		}
+	}
+	return ""
+}
+
+func formatDocumentation(sym *symbols.Symbol) string {
+	if sym.DocComment == "" {
+		return ""
+	}
+	doc := parser.ParseDocBlock(sym.DocComment)
+	if doc == nil || doc.Summary == "" {
+		return ""
+	}
+	return doc.Summary
+}
+
+func shortName(fqn string) string {
+	if idx := strings.LastIndex(fqn, "\\"); idx >= 0 {
+		return fqn[idx+1:]
+	}
+	return fqn
 }
