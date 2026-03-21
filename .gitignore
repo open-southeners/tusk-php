@@ -9,3 +9,5 @@ dist/
 plans/
 .DS_Store
 /CLAUDE.md
+/php-lsp
+*.wasm

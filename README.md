@@ -94,6 +94,47 @@ Keep Zed's built-in **PHP** extension installed. It provides syntax highlighting
 }
 ```
 
+Use Zed's `lsp: restart language servers` action after changing settings or reinstalling the dev extension.
+
+Zed-specific Tusk PHP settings can be passed through `lsp.tusk-php`:
+
+```json
+{
+  "lsp": {
+    "tusk-php": {
+      "binary": {
+        "path": "/absolute/path/to/php-lsp",
+        "arguments": ["--transport", "stdio"]
+      },
+      "initialization_options": {
+        "phpVersion": "8.5",
+        "framework": "auto",
+        "containerAware": true,
+        "diagnosticsEnabled": true,
+        "phpstanEnabled": true,
+        "phpstanPath": "",
+        "phpstanLevel": "",
+        "phpstanConfig": "",
+        "pintEnabled": true,
+        "pintPath": "",
+        "pintConfig": "",
+        "maxIndexFiles": 10000,
+        "excludePaths": ["vendor", "node_modules", ".git", "storage", "var/cache"]
+      }
+    }
+  }
+}
+```
+
+The Zed extension also provides Assistant slash commands:
+
+```text
+/tusk-copy-namespace app/Models/User.php
+/tusk-namespace-for-path app/Models/User.php
+```
+
+Zed does not expose the same extension command API as VS Code, so `Restart Server` maps to Zed's built-in `lsp: restart language servers` action, and `Move to Namespace...` is not yet exposed as a Zed command.
+
 ### Neovim
 
 Install the binary (see below), then add to your config:
