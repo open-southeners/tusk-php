@@ -219,6 +219,7 @@ type InitializationOptions struct {
 	PintEnabled        *bool    `json:"pintEnabled,omitempty"`
 	PintPath           string   `json:"pintPath,omitempty"`
 	PintConfig         string   `json:"pintConfig,omitempty"`
+	DatabaseEnabled    *bool    `json:"databaseEnabled,omitempty"`
 	MaxIndexFiles      *int     `json:"maxIndexFiles,omitempty"`
 	ExcludePaths       []string `json:"excludePaths,omitempty"`
 }

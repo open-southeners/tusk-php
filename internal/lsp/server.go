@@ -29,25 +29,26 @@ const ServerName = "php-lsp"
 const ServerVersion = "0.1.0"
 
 type Server struct {
-	cfg        *config.Config
-	index      *symbols.Index
-	container  *container.ContainerAnalyzer
-	completion *completion.Provider
-	hover      *hover.Provider
-	diag       *diagnostics.Provider
-	analyzer   *analyzer.Analyzer
-	docMu      sync.RWMutex
-	documents  map[string]string
-	rootPath   string
-	framework  string
-	reader     *bufio.Reader
-	writer     io.Writer
-	logger     *log.Logger
-	shutdown   bool
+	cfg         *config.Config
+	index       *symbols.Index
+	container   *container.ContainerAnalyzer
+	completion  *completion.Provider
+	hover       *hover.Provider
+	diag        *diagnostics.Provider
+	analyzer    *analyzer.Analyzer
+	schemaCache *models.SchemaCache
+	docMu       sync.RWMutex
+	documents   map[string]string
+	rootPath    string
+	framework   string
+	reader      *bufio.Reader
+	writer      io.Writer
+	logger      *log.Logger
+	shutdown    bool
 }
 
 func NewServer(reader io.Reader, writer io.Writer, logger *log.Logger) *Server {
-	return &Server{cfg: config.DefaultConfig(), index: symbols.NewIndex(), documents: make(map[string]string), reader: bufio.NewReader(reader), writer: writer, logger: logger}
+	return &Server{cfg: config.DefaultConfig(), index: symbols.NewIndex(), schemaCache: models.NewSchemaCache(), documents: make(map[string]string), reader: bufio.NewReader(reader), writer: writer, logger: logger}
 }
 
 func (s *Server) Run() error {
@@ -292,6 +293,8 @@ func (s *Server) handleInitialized(msg *jsonRPCMessage) {
 		if s.framework == "symfony" {
 			models.AnalyzeDoctrineEntities(s.index, s.rootPath)
 		}
+		// Database schema introspection runs last — other sources get priority
+		models.AnalyzeDatabaseSchema(s.index, s.rootPath, s.framework, s.cfg, s.logger, s.schemaCache)
 	})
 }
 

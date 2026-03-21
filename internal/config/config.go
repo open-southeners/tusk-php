@@ -24,6 +24,7 @@ type Config struct {
 	PintEnabled        *bool    `json:"pintEnabled,omitempty"`
 	PintPath           string   `json:"pintPath,omitempty"`
 	PintConfig         string   `json:"pintConfig,omitempty"`
+	DatabaseEnabled    *bool    `json:"databaseEnabled,omitempty"`
 	MaxIndexFiles      int      `json:"maxIndexFiles"`
 	StubsPath          string   `json:"stubsPath"`
 	LogLevel           string   `json:"logLevel"`
@@ -95,12 +96,23 @@ func (c *Config) MergeClientOptions(opts *protocol.InitializationOptions) {
 	if opts.PintConfig != "" {
 		c.PintConfig = opts.PintConfig
 	}
+	if opts.DatabaseEnabled != nil {
+		c.DatabaseEnabled = opts.DatabaseEnabled
+	}
 	if opts.MaxIndexFiles != nil {
 		c.MaxIndexFiles = *opts.MaxIndexFiles
 	}
 	if len(opts.ExcludePaths) > 0 {
 		c.ExcludePaths = opts.ExcludePaths
 	}
+}
+
+// IsDatabaseEnabled returns whether database introspection is enabled (default: true).
+func (c *Config) IsDatabaseEnabled() bool {
+	if c.DatabaseEnabled == nil {
+		return true
+	}
+	return *c.DatabaseEnabled
 }
 
 func DetectFramework(rootPath string) string {
