@@ -37,24 +37,37 @@ func (p *Provider) GetCompletions(uri, source string, pos protocol.Position) []p
 	}
 	trimmed := strings.TrimSpace(prefix)
 
+	// Check if there's already a '(' after the cursor (skip remaining identifier chars)
+	parenAfterCursor := false
+	if pos.Character < len(line) {
+		rest := line[pos.Character:]
+		for i := 0; i < len(rest); i++ {
+			if resolve.IsWordChar(rest[i]) || rest[i] == '$' {
+				continue
+			}
+			parenAfterCursor = rest[i] == '('
+			break
+		}
+	}
+
 	file := parser.ParseFile(source)
 
 	if strings.HasSuffix(trimmed, "->") || strings.HasSuffix(trimmed, "?->") {
-		return p.completeMemberAccess(uri, source, pos, prefix, file)
+		return p.completeMemberAccess(uri, source, pos, prefix, file, parenAfterCursor)
 	}
 	// Container argument context takes priority over :: detection
 	// (e.g. app(Request::class) should not trigger static access)
 	if _, _, isContainer := extractContainerArgContext(trimmed); !isContainer {
 		if strings.HasSuffix(trimmed, "::") {
-			return p.completeStaticAccess(source, prefix, pos, file)
+			return p.completeStaticAccess(source, prefix, pos, file, parenAfterCursor)
 		}
 		// Typing after -> or :: (e.g. "$foo->ba" or "Foo::cr")
 		if memberCtx, filter := detectMemberContext(trimmed); memberCtx != "" {
 			if strings.Contains(memberCtx, "::") {
-				items := p.completeStaticAccess(source, memberCtx, pos, file)
+				items := p.completeStaticAccess(source, memberCtx, pos, file, parenAfterCursor)
 				return filterByPrefix(items, filter)
 			}
-			items := p.completeMemberAccess(uri, source, pos, memberCtx, file)
+			items := p.completeMemberAccess(uri, source, pos, memberCtx, file, parenAfterCursor)
 			return filterByPrefix(items, filter)
 		}
 	}
@@ -117,7 +130,7 @@ func (p *Provider) GetCompletions(uri, source string, pos protocol.Position) []p
 	return items
 }
 
-func (p *Provider) completeMemberAccess(uri, source string, pos protocol.Position, prefix string, file *parser.FileNode) []protocol.CompletionItem {
+func (p *Provider) completeMemberAccess(uri, source string, pos protocol.Position, prefix string, file *parser.FileNode, parenAfterCursor bool) []protocol.CompletionItem {
 	typeName := p.resolveChainType(source, prefix, "->", pos, file)
 	if typeName == "" {
 		return nil
@@ -136,8 +149,12 @@ func (p *Provider) completeMemberAccess(uri, source string, pos protocol.Positio
 		switch m.Kind {
 		case symbols.KindMethod:
 			item.Kind = protocol.CompletionItemKindMethod
-			item.InsertText = m.Name + "($0)"
-			item.InsertTextFormat = 2
+			if parenAfterCursor {
+				item.InsertText = m.Name
+			} else {
+				item.InsertText = m.Name + "($0)"
+				item.InsertTextFormat = 2
+			}
 		case symbols.KindProperty:
 			item.Label = strings.TrimPrefix(m.Name, "$")
 			item.Kind = protocol.CompletionItemKindProperty
@@ -147,7 +164,7 @@ func (p *Provider) completeMemberAccess(uri, source string, pos protocol.Positio
 	return items
 }
 
-func (p *Provider) completeStaticAccess(source, prefix string, pos protocol.Position, file *parser.FileNode) []protocol.CompletionItem {
+func (p *Provider) completeStaticAccess(source, prefix string, pos protocol.Position, file *parser.FileNode, parenAfterCursor bool) []protocol.CompletionItem {
 	typeName := p.resolveChainType(source, prefix, "::", pos, file)
 	if typeName == "" {
 		return nil
@@ -161,8 +178,12 @@ func (p *Provider) completeStaticAccess(source, prefix string, pos protocol.Posi
 		switch m.Kind {
 		case symbols.KindMethod:
 			item.Kind = protocol.CompletionItemKindMethod
-			item.InsertText = m.Name + "($0)"
-			item.InsertTextFormat = 2
+			if parenAfterCursor {
+				item.InsertText = m.Name
+			} else {
+				item.InsertText = m.Name + "($0)"
+				item.InsertTextFormat = 2
+			}
 		case symbols.KindConstant:
 			item.Kind = protocol.CompletionItemKindConstant
 		case symbols.KindEnumCase:
