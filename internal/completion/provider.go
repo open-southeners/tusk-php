@@ -502,7 +502,7 @@ func (p *Provider) completePipe(currentNS string) []protocol.CompletionItem {
 	var items []protocol.CompletionItem
 	for _, sym := range p.index.SearchByPrefix("") {
 		if sym.Kind == symbols.KindFunction && len(sym.Params) > 0 {
-			items = append(items, protocol.CompletionItem{Label: sym.Name, Kind: protocol.CompletionItemKindFunction, Detail: fmtSig(sym), SortText: sortPriority(sym, currentNS)})
+			items = append(items, protocol.CompletionItem{Label: sym.Name, Kind: protocol.CompletionItemKindFunction, Detail: formatDetail(sym), SortText: sortPriority(sym, currentNS)})
 		}
 	}
 	return items
@@ -787,10 +787,19 @@ func symKind(kind symbols.SymbolKind) protocol.CompletionItemKind {
 	}
 }
 
+// formatDetail builds the detail string shown next to the completion label.
+// Format: ParentFQN::name(params): returnType
+// e.g.  Illuminate\Database\Eloquent\Collection::all($columns): array<TKey, TValue>
 func formatDetail(sym *symbols.Symbol) string {
+	owner := sym.ParentFQN
 	switch sym.Kind {
 	case symbols.KindMethod:
-		return fmtSig(sym)
+		params := fmtParams(sym)
+		ret := resolveReturnType(sym)
+		if owner != "" {
+			return fmt.Sprintf("%s::%s(%s): %s", owner, sym.Name, params, ret)
+		}
+		return fmt.Sprintf("%s(%s): %s", sym.Name, params, ret)
 	case symbols.KindProperty:
 		typ := sym.Type
 		if typ == "" {
@@ -799,13 +808,13 @@ func formatDetail(sym *symbols.Symbol) string {
 		if typ == "" {
 			typ = "mixed"
 		}
-		if sym.ParentFQN != "" {
-			return typ + "  — " + shortName(sym.ParentFQN)
+		if owner != "" {
+			return fmt.Sprintf("%s::$%s: %s", owner, strings.TrimPrefix(sym.Name, "$"), typ)
 		}
 		return typ
 	case symbols.KindConstant, symbols.KindEnumCase:
-		if sym.ParentFQN != "" {
-			return sym.ParentFQN
+		if owner != "" {
+			return owner + "::" + sym.Name
 		}
 		return sym.FQN
 	default:
@@ -813,7 +822,7 @@ func formatDetail(sym *symbols.Symbol) string {
 	}
 }
 
-func fmtSig(sym *symbols.Symbol) string {
+func fmtParams(sym *symbols.Symbol) string {
 	var params []string
 	for _, p := range sym.Params {
 		s := ""
@@ -826,28 +835,18 @@ func fmtSig(sym *symbols.Symbol) string {
 		s += p.Name
 		params = append(params, s)
 	}
-	ret := resolveReturnType(sym)
-	origin := ""
-	if sym.ParentFQN != "" {
-		origin = "  — " + shortName(sym.ParentFQN)
-	}
-	return fmt.Sprintf("(%s): %s%s", strings.Join(params, ", "), ret, origin)
+	return strings.Join(params, ", ")
 }
 
 // resolveReturnType gets the return type from the type hint or @return docblock.
+// Keeps generic type parameters (e.g. array<TKey, TValue>) intact.
 func resolveReturnType(sym *symbols.Symbol) string {
 	if sym.ReturnType != "" {
 		return sym.ReturnType
 	}
 	if sym.DocComment != "" {
 		if doc := parser.ParseDocBlock(sym.DocComment); doc != nil && doc.Return.Type != "" {
-			t := doc.Return.Type
-			// Strip leading backslash and generic parameters for display
-			t = strings.TrimPrefix(t, "\\")
-			if idx := strings.IndexByte(t, '<'); idx > 0 {
-				t = t[:idx]
-			}
-			return t
+			return strings.TrimPrefix(doc.Return.Type, "\\")
 		}
 	}
 	return "mixed"
@@ -865,12 +864,7 @@ func docblockVarType(sym *symbols.Symbol) string {
 	if vars, ok := doc.Tags["var"]; ok && len(vars) > 0 {
 		fields := strings.Fields(vars[0])
 		if len(fields) > 0 {
-			t := fields[0]
-			t = strings.TrimPrefix(t, "\\")
-			if idx := strings.IndexByte(t, '<'); idx > 0 {
-				t = t[:idx]
-			}
-			return t
+			return strings.TrimPrefix(fields[0], "\\")
 		}
 	}
 	return ""
@@ -885,11 +879,4 @@ func formatDocumentation(sym *symbols.Symbol) string {
 		return ""
 	}
 	return doc.Summary
-}
-
-func shortName(fqn string) string {
-	if idx := strings.LastIndex(fqn, "\\"); idx >= 0 {
-		return fqn[idx+1:]
-	}
-	return fqn
 }
