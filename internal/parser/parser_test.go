@@ -410,3 +410,75 @@ class Builder {
 		}
 	}
 }
+
+func TestParseDocBlockPropertyAndMethod(t *testing.T) {
+	raw := `/**
+	 * User model.
+	 *
+	 * @property string $name The user name
+	 * @property-read int $id
+	 * @property-write string $password
+	 * @method static Collection all()
+	 * @method bool save(array $options) Save the model
+	 * @method void setName(string $name, bool $force = false)
+	 */`
+	doc := ParseDocBlock(raw)
+	if doc == nil {
+		t.Fatal("expected non-nil docblock")
+	}
+
+	// Properties
+	if len(doc.Properties) != 3 {
+		t.Fatalf("expected 3 properties, got %d", len(doc.Properties))
+	}
+
+	p0 := doc.Properties[0]
+	if p0.Type != "string" || p0.Name != "name" || p0.Description != "The user name" {
+		t.Errorf("unexpected property 0: %+v", p0)
+	}
+	if p0.ReadOnly || p0.WriteOnly {
+		t.Errorf("property 0 should not be read/write only: %+v", p0)
+	}
+
+	p1 := doc.Properties[1]
+	if p1.Type != "int" || p1.Name != "id" {
+		t.Errorf("unexpected property 1: %+v", p1)
+	}
+	if !p1.ReadOnly {
+		t.Error("property 1 should be read-only")
+	}
+
+	p2 := doc.Properties[2]
+	if p2.Type != "string" || p2.Name != "password" {
+		t.Errorf("unexpected property 2: %+v", p2)
+	}
+	if !p2.WriteOnly {
+		t.Error("property 2 should be write-only")
+	}
+
+	// Methods
+	if len(doc.Methods) != 3 {
+		t.Fatalf("expected 3 methods, got %d", len(doc.Methods))
+	}
+
+	m0 := doc.Methods[0]
+	if m0.ReturnType != "Collection" || m0.Name != "all" || m0.Params != "" {
+		t.Errorf("unexpected method 0: %+v", m0)
+	}
+
+	m1 := doc.Methods[1]
+	if m1.ReturnType != "bool" || m1.Name != "save" || m1.Params != "array $options" {
+		t.Errorf("unexpected method 1: %+v", m1)
+	}
+	if m1.Description != "Save the model" {
+		t.Errorf("unexpected method 1 desc: %q", m1.Description)
+	}
+
+	m2 := doc.Methods[2]
+	if m2.ReturnType != "void" || m2.Name != "setName" {
+		t.Errorf("unexpected method 2: %+v", m2)
+	}
+	if m2.Params != "string $name, bool $force = false" {
+		t.Errorf("unexpected method 2 params: %q", m2.Params)
+	}
+}

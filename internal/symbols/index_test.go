@@ -325,3 +325,123 @@ class DefaultClass {}
 		}
 	})
 }
+
+func TestIndexVirtualMembers(t *testing.T) {
+	idx := NewIndex()
+	idx.IndexFile("file:///model.php", `<?php
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Collection;
+
+/**
+ * @property string $name
+ * @property-read int $id
+ * @property-write string $password
+ * @method static Collection all()
+ * @method bool save(array $options)
+ */
+class User {
+    public string $email;
+}
+`)
+
+	t.Run("virtual property from @property", func(t *testing.T) {
+		sym := idx.Lookup("App\\Models\\User::$name")
+		if sym == nil {
+			t.Fatal("expected virtual property '$name'")
+		}
+		if sym.Kind != KindProperty {
+			t.Errorf("expected KindProperty, got %d", sym.Kind)
+		}
+		if !sym.IsVirtual {
+			t.Error("expected IsVirtual to be true")
+		}
+		if sym.Type != "string" {
+			t.Errorf("expected type 'string', got %q", sym.Type)
+		}
+		if sym.Visibility != "public" {
+			t.Errorf("expected visibility 'public', got %q", sym.Visibility)
+		}
+	})
+
+	t.Run("virtual property from @property-read", func(t *testing.T) {
+		sym := idx.Lookup("App\\Models\\User::$id")
+		if sym == nil {
+			t.Fatal("expected virtual property '$id'")
+		}
+		if !sym.IsVirtual {
+			t.Error("expected IsVirtual to be true")
+		}
+		if sym.Type != "int" {
+			t.Errorf("expected type 'int', got %q", sym.Type)
+		}
+	})
+
+	t.Run("virtual property from @property-write", func(t *testing.T) {
+		sym := idx.Lookup("App\\Models\\User::$password")
+		if sym == nil {
+			t.Fatal("expected virtual property '$password'")
+		}
+		if !sym.IsVirtual {
+			t.Error("expected IsVirtual to be true")
+		}
+	})
+
+	t.Run("virtual method from @method", func(t *testing.T) {
+		sym := idx.Lookup("App\\Models\\User::all")
+		if sym == nil {
+			t.Fatal("expected virtual method 'all'")
+		}
+		if sym.Kind != KindMethod {
+			t.Errorf("expected KindMethod, got %d", sym.Kind)
+		}
+		if !sym.IsVirtual {
+			t.Error("expected IsVirtual to be true")
+		}
+		if sym.ReturnType != "Illuminate\\Database\\Eloquent\\Collection" {
+			t.Errorf("expected return type 'Illuminate\\Database\\Eloquent\\Collection', got %q", sym.ReturnType)
+		}
+	})
+
+	t.Run("virtual method with params", func(t *testing.T) {
+		sym := idx.Lookup("App\\Models\\User::save")
+		if sym == nil {
+			t.Fatal("expected virtual method 'save'")
+		}
+		if sym.ReturnType != "bool" {
+			t.Errorf("expected return type 'bool', got %q", sym.ReturnType)
+		}
+		if len(sym.Params) != 1 {
+			t.Fatalf("expected 1 param, got %d", len(sym.Params))
+		}
+		if sym.Params[0].Type != "array" {
+			t.Errorf("expected param type 'array', got %q", sym.Params[0].Type)
+		}
+		if sym.Params[0].Name != "$options" {
+			t.Errorf("expected param name '$options', got %q", sym.Params[0].Name)
+		}
+	})
+
+	t.Run("real property not overridden", func(t *testing.T) {
+		sym := idx.Lookup("App\\Models\\User::$email")
+		if sym == nil {
+			t.Fatal("expected real property 'email'")
+		}
+		if sym.IsVirtual {
+			t.Error("expected IsVirtual to be false for real property")
+		}
+	})
+
+	t.Run("virtual members in GetClassMembers", func(t *testing.T) {
+		members := idx.GetClassMembers("App\\Models\\User")
+		names := make(map[string]bool)
+		for _, m := range members {
+			names[m.Name] = true
+		}
+		for _, expected := range []string{"$name", "$id", "$password", "all", "save", "$email"} {
+			if !names[expected] {
+				t.Errorf("expected member %q in GetClassMembers", expected)
+			}
+		}
+	})
+}

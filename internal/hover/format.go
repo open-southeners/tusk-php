@@ -35,6 +35,9 @@ func (p *Provider) formatHoverDeclaration(sym *symbols.Symbol) string {
 			sb.WriteString(" extends " + joinShortNames(sym.Implements))
 		}
 	case symbols.KindMethod:
+		if sym.IsVirtual {
+			sb.WriteString("(magic) ")
+		}
 		vis := sym.Visibility
 		if vis == "" {
 			vis = "public"
@@ -59,6 +62,9 @@ func (p *Provider) formatHoverDeclaration(sym *symbols.Symbol) string {
 			sb.WriteString(": " + sym.ReturnType)
 		}
 	case symbols.KindProperty:
+		if sym.IsVirtual {
+			sb.WriteString("(magic) ")
+		}
 		vis := sym.Visibility
 		if vis == "" {
 			vis = "public"

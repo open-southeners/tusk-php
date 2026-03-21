@@ -56,6 +56,7 @@ type Symbol struct {
 	Extends    string
 	BackedType string
 	Value      string
+	IsVirtual  bool
 }
 
 type ParamInfo struct {
@@ -155,6 +156,7 @@ func (idx *Index) IndexFileWithSource(uri string, source string, src SymbolSourc
 			sym.Children = append(sym.Children, cs)
 			idx.addSymbolWithSource(uri, cs, src)
 		}
+		idx.indexVirtualMembers(uri, sym, src, resolve)
 	}
 
 	for _, iface := range file.Interfaces {
@@ -163,6 +165,7 @@ func (idx *Index) IndexFileWithSource(uri string, source string, src SymbolSourc
 			Range: symRange(iface.StartLine, iface.StartCol, len(iface.Name))}
 		idx.addSymbolWithSource(uri, sym, src)
 		idx.indexMethods(uri, sym, fqn, iface.Methods, src, resolve)
+		idx.indexVirtualMembers(uri, sym, src, resolve)
 	}
 
 	for _, tr := range file.Traits {
@@ -179,6 +182,7 @@ func (idx *Index) IndexFileWithSource(uri string, source string, src SymbolSourc
 			idx.addSymbolWithSource(uri, ps, src)
 		}
 		idx.indexMethods(uri, sym, fqn, tr.Methods, src, resolve)
+		idx.indexVirtualMembers(uri, sym, src, resolve)
 	}
 
 	for _, en := range file.Enums {
@@ -295,6 +299,103 @@ func (idx *Index) indexMethods(uri string, parent *Symbol, parentFQN string, met
 		parent.Children = append(parent.Children, ms)
 		idx.addSymbolWithSource(uri, ms, src)
 	}
+}
+
+// indexVirtualMembers parses @property/@method docblock tags on a class-level
+// symbol and injects them as virtual children so they appear in completion/hover.
+func (idx *Index) indexVirtualMembers(uri string, parent *Symbol, src SymbolSource, resolve func(string) string) {
+	if parent.DocComment == "" {
+		return
+	}
+	doc := parser.ParseDocBlock(parent.DocComment)
+	if doc == nil {
+		return
+	}
+	fqn := parent.FQN
+
+	for _, prop := range doc.Properties {
+		if prop.Name == "" {
+			continue
+		}
+		propName := "$" + prop.Name
+		// Skip if a real member with this name already exists
+		if idx.symbols[fqn+"::"+propName] != nil {
+			continue
+		}
+		ps := &Symbol{
+			Name:       propName,
+			FQN:        fqn + "::" + propName,
+			Kind:       KindProperty,
+			URI:        uri,
+			Visibility: "public",
+			Type:       resolve(prop.Type),
+			ParentFQN:  fqn,
+			IsVirtual:  true,
+			DocComment: prop.Description,
+		}
+		parent.Children = append(parent.Children, ps)
+		idx.addSymbolWithSource(uri, ps, src)
+	}
+
+	for _, method := range doc.Methods {
+		if method.Name == "" {
+			continue
+		}
+		if idx.symbols[fqn+"::"+method.Name] != nil {
+			continue
+		}
+		ms := &Symbol{
+			Name:       method.Name,
+			FQN:        fqn + "::" + method.Name,
+			Kind:       KindMethod,
+			URI:        uri,
+			Visibility: "public",
+			ReturnType: resolve(method.ReturnType),
+			ParentFQN:  fqn,
+			IsVirtual:  true,
+			DocComment: method.Description,
+		}
+		// Parse params string into ParamInfo slice
+		if method.Params != "" {
+			ms.Params = parseDocMethodParams(method.Params, resolve)
+		}
+		parent.Children = append(parent.Children, ms)
+		idx.addSymbolWithSource(uri, ms, src)
+	}
+}
+
+// parseDocMethodParams parses a comma-separated param string like "string $name, int $age = 0"
+// into a slice of ParamInfo.
+func parseDocMethodParams(raw string, resolve func(string) string) []ParamInfo {
+	var params []ParamInfo
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		p := ParamInfo{}
+		fields := strings.Fields(part)
+		for _, f := range fields {
+			if f == "=" {
+				break
+			}
+			if strings.HasPrefix(f, "$") {
+				p.Name = f
+			} else if strings.HasPrefix(f, "...") {
+				p.IsVariadic = true
+				rest := strings.TrimPrefix(f, "...")
+				if strings.HasPrefix(rest, "$") {
+					p.Name = rest
+				} else if rest != "" {
+					p.Type = resolve(rest)
+				}
+			} else if p.Name == "" && p.Type == "" {
+				p.Type = resolve(f)
+			}
+		}
+		params = append(params, p)
+	}
+	return params
 }
 
 func (idx *Index) Lookup(fqn string) *Symbol {

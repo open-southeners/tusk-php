@@ -150,12 +150,29 @@ type DocThrow struct {
 	Description string
 }
 
+type DocProperty struct {
+	Type        string
+	Name        string
+	Description string
+	ReadOnly    bool
+	WriteOnly   bool
+}
+
+type DocMethod struct {
+	ReturnType  string
+	Name        string
+	Params      string
+	Description string
+}
+
 type DocBlock struct {
 	Summary       string
 	Tags          map[string][]string
 	Params        []DocParam
 	Return        DocReturn
 	Throws        []DocThrow
+	Properties    []DocProperty
+	Methods       []DocMethod
 	Deprecated    bool
 	DeprecatedMsg string
 }
@@ -218,6 +235,14 @@ func ParseDocBlock(raw string) *DocBlock {
 			case "deprecated":
 				doc.Deprecated = true
 				doc.DeprecatedMsg = value
+			case "property":
+				doc.Properties = append(doc.Properties, parseDocProperty(value, false, false))
+			case "property-read":
+				doc.Properties = append(doc.Properties, parseDocProperty(value, true, false))
+			case "property-write":
+				doc.Properties = append(doc.Properties, parseDocProperty(value, false, true))
+			case "method":
+				doc.Methods = append(doc.Methods, parseDocMethod(value))
 			}
 			continue
 		}
@@ -282,6 +307,100 @@ func parseDocThrow(value string) DocThrow {
 		th.Description = strings.TrimSpace(parts[1])
 	}
 	return th
+}
+
+// parseDocProperty parses "@property Type $name Description" into structured DocProperty.
+func parseDocProperty(value string, readOnly, writeOnly bool) DocProperty {
+	p := DocProperty{ReadOnly: readOnly, WriteOnly: writeOnly}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return p
+	}
+	// If value starts with $, there's no type
+	if strings.HasPrefix(value, "$") {
+		parts := strings.Fields(value)
+		p.Name = strings.TrimPrefix(parts[0], "$")
+		if len(parts) > 1 {
+			p.Description = strings.Join(parts[1:], " ")
+		}
+		return p
+	}
+	// Extract type (handles nested braces/angles)
+	p.Type, value = types.ExtractDocTypeString(value)
+	parts := strings.Fields(value)
+	idx := 0
+	if idx < len(parts) && strings.HasPrefix(parts[idx], "$") {
+		p.Name = strings.TrimPrefix(parts[idx], "$")
+		idx++
+	}
+	if idx < len(parts) {
+		p.Description = strings.Join(parts[idx:], " ")
+	}
+	return p
+}
+
+// parseDocMethod parses "@method ReturnType name(params) Description" or
+// "@method name(params) Description" into structured DocMethod.
+func parseDocMethod(value string) DocMethod {
+	m := DocMethod{}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return m
+	}
+
+	// Check if there's a static keyword prefix
+	if strings.HasPrefix(value, "static ") {
+		value = strings.TrimSpace(value[7:])
+	}
+
+	// Try to detect if first token is a return type or a method name.
+	// A method name will be followed by '(' while a type won't.
+	firstParen := strings.Index(value, "(")
+	if firstParen < 0 {
+		// No parens at all — malformed, just store as name
+		m.Name = value
+		return m
+	}
+
+	beforeParen := value[:firstParen]
+	parts := strings.Fields(beforeParen)
+
+	switch len(parts) {
+	case 0:
+		return m
+	case 1:
+		// Either "name(" or might be a type if there's no space before (
+		m.Name = parts[0]
+	default:
+		// "ReturnType name(" — last part is name, everything before is return type
+		m.Name = parts[len(parts)-1]
+		m.ReturnType = strings.Join(parts[:len(parts)-1], " ")
+	}
+
+	// Extract params between ( and matching )
+	rest := value[firstParen:]
+	depth := 0
+	closeIdx := -1
+	for i, ch := range rest {
+		if ch == '(' {
+			depth++
+		} else if ch == ')' {
+			depth--
+			if depth == 0 {
+				closeIdx = i
+				break
+			}
+		}
+	}
+	if closeIdx >= 0 {
+		m.Params = rest[1:closeIdx]
+		remaining := strings.TrimSpace(rest[closeIdx+1:])
+		if remaining != "" {
+			m.Description = remaining
+		}
+	}
+
+	return m
 }
 
 func toFileNode(result *ParseResult) *FileNode {
