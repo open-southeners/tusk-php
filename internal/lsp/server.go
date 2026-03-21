@@ -265,7 +265,7 @@ func (s *Server) handleInitialize(msg *jsonRPCMessage) {
 			SignatureHelpProvider: &protocol.SignatureHelpOptions{TriggerCharacters: []string{"(", ","}},
 			RenameProvider:       &protocol.RenameOptions{PrepareProvider: true},
 			CodeActionProvider:   &protocol.CodeActionOptions{CodeActionKinds: []string{"refactor", "source"}},
-			ExecuteCommandProvider: &protocol.ExecuteCommandOptions{Commands: []string{"phpLsp.namespaceForPath"}},
+			ExecuteCommandProvider: &protocol.ExecuteCommandOptions{Commands: []string{"tuskPhpLsp.namespaceForPath"}},
 		},
 		ServerInfo: protocol.ServerInfo{Name: ServerName, Version: ServerVersion},
 	})
@@ -444,7 +444,7 @@ func (s *Server) handleExecuteCommand(msg *jsonRPCMessage) {
 		return
 	}
 	switch params.Command {
-	case "phpLsp.copyNamespace":
+	case "tuskPhpLsp.copyNamespace":
 		if len(params.Arguments) > 0 {
 			var uri string
 			if json.Unmarshal(params.Arguments[0], &uri) == nil {
@@ -455,7 +455,7 @@ func (s *Server) handleExecuteCommand(msg *jsonRPCMessage) {
 			}
 		}
 		s.sendResponse(msg.ID, nil)
-	case "phpLsp.namespaceForPath":
+	case "tuskPhpLsp.namespaceForPath":
 		// Returns the expected namespace for a file path based on PSR-4 autoload
 		if len(params.Arguments) > 0 {
 			var uri string
@@ -468,7 +468,7 @@ func (s *Server) handleExecuteCommand(msg *jsonRPCMessage) {
 			}
 		}
 		s.sendResponse(msg.ID, nil)
-	case "phpLsp.moveToNamespace":
+	case "tuskPhpLsp.moveToNamespace":
 		// Arguments: [uri, targetNamespace]
 		if len(params.Arguments) >= 2 {
 			var uri, targetNS string

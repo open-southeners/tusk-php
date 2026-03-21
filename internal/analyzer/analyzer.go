@@ -1108,7 +1108,7 @@ func (a *Analyzer) GetCodeActions(uri, source string, params protocol.CodeAction
 		actions = append(actions, protocol.CodeAction{
 			Title:   "Copy Namespace: " + fqn,
 			Kind:    "source",
-			Command: &protocol.Command{Title: "Copy Namespace", Command: "phpLsp.copyNamespace", Arguments: []json.RawMessage{uriJSON}},
+			Command: &protocol.Command{Title: "Copy Namespace", Command: "tuskPhpLsp.copyNamespace", Arguments: []json.RawMessage{uriJSON}},
 		})
 	}
 
@@ -1156,7 +1156,7 @@ func (a *Analyzer) GetCodeActions(uri, source string, params protocol.CodeAction
 				Kind:  "refactor.move",
 				Command: &protocol.Command{
 					Title:     "Move to namespace",
-					Command:   "phpLsp.moveToNamespace",
+					Command:   "tuskPhpLsp.moveToNamespace",
 					Arguments: []json.RawMessage{uriJSON},
 				},
 			})
