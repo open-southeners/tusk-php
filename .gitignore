@@ -4,6 +4,7 @@ build/
 node_modules/
 out/
 target/
+dist/
 .vscode-test/
 plans/
 .DS_Store

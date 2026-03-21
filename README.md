@@ -82,6 +82,18 @@ Or search for **"Tusk PHP"** in the Extensions panel. The extension bundles the 
 
 Search for **"Tusk PHP"** in `zed: extensions`. The extension automatically downloads the correct binary for your platform.
 
+Keep Zed's built-in **PHP** extension installed. It provides syntax highlighting, PHPDoc highlighting, and other language assets. Install **Tusk PHP** alongside it, then set Tusk PHP as the only PHP language server to avoid collisions with Phpactor, Intelephense, or PHP Tools:
+
+```json
+{
+  "languages": {
+    "PHP": {
+      "language_servers": ["tusk-php"]
+    }
+  }
+}
+```
+
 ### Neovim
 
 Install the binary (see below), then add to your config:
