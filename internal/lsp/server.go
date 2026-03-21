@@ -289,6 +289,9 @@ func (s *Server) handleInitialized(msg *jsonRPCMessage) {
 		if s.framework == "laravel" {
 			models.AnalyzeEloquentModels(s.index, s.rootPath)
 		}
+		if s.framework == "symfony" {
+			models.AnalyzeDoctrineEntities(s.index, s.rootPath)
+		}
 	})
 }
 
