@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/open-southeners/php-lsp/internal/checks"
 	"github.com/open-southeners/php-lsp/internal/config"
 	"github.com/open-southeners/php-lsp/internal/parser"
 	"github.com/open-southeners/php-lsp/internal/protocol"
@@ -47,6 +48,8 @@ func (p *Provider) Analyze(uri, source string) []protocol.Diagnostic {
 		diags = append(diags, p.checkDeprecations(source)...)
 		diags = append(diags, p.checkClassStructure(file)...)
 		diags = append(diags, p.checkUnusedImports(file, source)...)
+		diags = append(diags, findingsToDiagnostics((&checks.UnusedPrivateRule{}).Check(file, source, p.index))...)
+		diags = append(diags, findingsToDiagnostics((&checks.UnreachableCodeRule{}).Check(file, source, p.index))...)
 	}
 	p.mu.RLock()
 	if cached, ok := p.toolResults[uri]; ok {
@@ -120,17 +123,35 @@ func (p *Provider) checkClassStructure(file *parser.FileNode) []protocol.Diagnos
 }
 
 func (p *Provider) checkUnusedImports(file *parser.FileNode, source string) []protocol.Diagnostic {
-	var diags []protocol.Diagnostic
-	for _, u := range file.Uses {
-		useLine := fmt.Sprintf("use %s", u.FullName)
-		remaining := strings.Replace(source, useLine, "", 1)
-		if !strings.Contains(remaining, u.Alias) {
-			diags = append(diags, protocol.Diagnostic{
-				Range:    protocol.Range{Start: protocol.Position{Line: u.StartLine}},
-				Severity: protocol.DiagnosticSeverityHint, Source: "php-lsp",
-				Message:  fmt.Sprintf("Unused import '%s'", u.FullName), Code: "unused-import",
-			})
+	rule := &checks.UnusedImportsRule{}
+	return findingsToDiagnostics(rule.Check(file, source, p.index))
+}
+
+// findingsToDiagnostics converts standalone check findings to LSP diagnostics.
+func findingsToDiagnostics(findings []checks.Finding) []protocol.Diagnostic {
+	diags := make([]protocol.Diagnostic, 0, len(findings))
+	for _, f := range findings {
+		sev := protocol.DiagnosticSeverityHint
+		switch f.Severity {
+		case checks.SeverityError:
+			sev = protocol.DiagnosticSeverityError
+		case checks.SeverityWarning:
+			sev = protocol.DiagnosticSeverityWarning
+		case checks.SeverityInfo:
+			sev = protocol.DiagnosticSeverityInformation
+		case checks.SeverityHint:
+			sev = protocol.DiagnosticSeverityHint
 		}
+		diags = append(diags, protocol.Diagnostic{
+			Range: protocol.Range{
+				Start: protocol.Position{Line: f.StartLine, Character: f.StartCol},
+				End:   protocol.Position{Line: f.EndLine, Character: f.EndCol},
+			},
+			Severity: sev,
+			Source:   "php-lsp",
+			Message:  f.Message,
+			Code:     f.Code,
+		})
 	}
 	return diags
 }
