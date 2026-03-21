@@ -137,7 +137,7 @@ func (r *Resolver) MemberType(member *symbols.Symbol, file *parser.FileNode) str
 	if typeName == "" || typeName == "void" || typeName == "mixed" {
 		return ""
 	}
-	if typeName == "self" || typeName == "static" {
+	if typeName == "self" || typeName == "static" || typeName == "$this" {
 		return member.ParentFQN
 	}
 	// Strip leading backslash for FQN types from docblocks

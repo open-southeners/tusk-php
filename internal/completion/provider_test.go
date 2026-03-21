@@ -427,7 +427,10 @@ class Model {
 namespace Illuminate\Database\Eloquent;
 
 class Builder {
-    public function with(string $relation): self { return $this; }
+    /**
+     * @return $this
+     */
+    public function with(string $relation) { return $this; }
     public function where(string $col): self { return $this; }
 }
 `)
@@ -463,6 +466,29 @@ class CategoryController {
 	}
 	if !labels["where"] {
 		t.Error("expected 'where' method from Builder via Category::query()->")
+	}
+
+	// Test chained completion: Category::query()->with('form')-> should also show Builder methods
+	// because with() returns $this (same Builder instance)
+	source2 := `<?php
+namespace App\Http\Controllers;
+
+use App\Models\Category;
+
+class CategoryController {
+    public function index() {
+        Category::query()->with('form')->
+    }
+}
+`
+	pos2 := protocol.Position{Line: 7, Character: 41}
+	items2 := p.GetCompletions("file:///controller.php", source2, pos2)
+	labels2 := map[string]bool{}
+	for _, item := range items2 {
+		labels2[item.Label] = true
+	}
+	if !labels2["where"] {
+		t.Error("expected 'where' after Category::query()->with('form')-> ($this return)")
 	}
 }
 
