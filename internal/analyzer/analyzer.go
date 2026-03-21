@@ -266,8 +266,11 @@ func (a *Analyzer) resolveAccessChain(line string, wordStart int, source string,
 
 	// Try as a class name (for static access like Logger::create)
 	if fqn := a.resolver.ResolveClassName(target, file); fqn != "" {
-		if a.index.Lookup(fqn) != nil {
-			return fqn
+		if sym := a.index.Lookup(fqn); sym != nil {
+			switch sym.Kind {
+			case symbols.KindClass, symbols.KindInterface, symbols.KindEnum, symbols.KindTrait:
+				return fqn
+			}
 		}
 	}
 

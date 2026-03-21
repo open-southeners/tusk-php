@@ -142,6 +142,10 @@ func (r *Resolver) MemberType(member *symbols.Symbol, file *parser.FileNode) str
 	}
 	// Strip leading backslash for FQN types from docblocks
 	typeName = strings.TrimPrefix(typeName, "\\")
+	// Strip generic type parameters: Builder<static> → Builder
+	if idx := strings.IndexByte(typeName, '<'); idx > 0 {
+		typeName = typeName[:idx]
+	}
 	// Handle union types: take the first non-null type
 	if strings.Contains(typeName, "|") {
 		for _, part := range strings.Split(typeName, "|") {

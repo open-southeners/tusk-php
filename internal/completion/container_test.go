@@ -27,6 +27,23 @@ func collectLabels(items []protocol.CompletionItem) map[string]bool {
 	return m
 }
 
+func indexPHPDir(t *testing.T, idx *symbols.Index, root, dir string, src symbols.SymbolSource) {
+	t.Helper()
+	absDir := filepath.Join(root, dir)
+	filepath.Walk(absDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || filepath.Ext(path) != ".php" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, path)
+		idx.IndexFileWithSource("file:///"+rel, string(data), src)
+		return nil
+	})
+}
+
 func setupLaravelIndex(t *testing.T) (*symbols.Index, *container.ContainerAnalyzer) {
 	t.Helper()
 	root := filepath.Join("..", "..", "testdata", "laravel")
@@ -35,25 +52,10 @@ func setupLaravelIndex(t *testing.T) (*symbols.Index, *container.ContainerAnalyz
 	idx.RegisterBuiltins()
 
 	// Index project files
-	for _, rel := range []string{
-		"app/Models/User.php",
-		"app/Models/Category.php",
-		"app/Services/PaymentGateway.php",
-		"app/Services/StripeGateway.php",
-		"app/Services/CustomMailer.php",
-		"app/Providers/AppServiceProvider.php",
-	} {
-		src := mustReadFile(t, filepath.Join(root, rel))
-		idx.IndexFileWithSource("file:///"+rel, src, symbols.SourceProject)
-	}
+	indexPHPDir(t, idx, root, "app", symbols.SourceProject)
 
-	// Index vendor files
-	for _, rel := range []string{
-		"vendor/illuminate/http/src/Request.php",
-	} {
-		src := mustReadFile(t, filepath.Join(root, rel))
-		idx.IndexFileWithSource("file:///"+rel, src, symbols.SourceVendor)
-	}
+	// Index the full laravel/framework vendor package for realistic chain resolution
+	indexPHPDir(t, idx, root, "vendor/laravel/framework/src", symbols.SourceVendor)
 
 	ca := container.NewContainerAnalyzer(idx, root, "laravel")
 	ca.Analyze()
@@ -75,6 +77,17 @@ func setupSymfonyIndex(t *testing.T) (*symbols.Index, *container.ContainerAnalyz
 	} {
 		src := mustReadFile(t, filepath.Join(root, rel))
 		idx.IndexFileWithSource("file:///"+rel, src, symbols.SourceProject)
+	}
+
+	// Index vendor files
+	for _, rel := range []string{
+		"vendor/symfony/framework-bundle/src/Controller/AbstractController.php",
+		"vendor/symfony/http-foundation/src/Request.php",
+		"vendor/symfony/http-foundation/src/Response.php",
+		"vendor/symfony/http-foundation/src/JsonResponse.php",
+	} {
+		src := mustReadFile(t, filepath.Join(root, rel))
+		idx.IndexFileWithSource("file:///"+rel, src, symbols.SourceVendor)
 	}
 
 	ca := container.NewContainerAnalyzer(idx, root, "symfony")
@@ -224,9 +237,89 @@ class TestController {
 	items := p.GetCompletions("file:///test.php", source, protocol.Position{Line: 7, Character: 14})
 	labels := collectLabels(items)
 
-	if !labels["find"] {
-		t.Error("expected 'find' static method via User::")
+	if !labels["query"] {
+		t.Error("expected 'query' static method via User::")
 	}
+	if !labels["all"] {
+		t.Error("expected 'all' static method via User::")
+	}
+}
+
+func TestLaravelQueryBuilderChainCompletion(t *testing.T) {
+	idx, ca := setupLaravelIndex(t)
+	p := NewProvider(idx, ca, "laravel")
+
+	// Category::query()-> should show Builder methods
+	t.Run("query()->", func(t *testing.T) {
+		source := `<?php
+namespace App\Http\Controllers;
+
+use App\Models\Category;
+
+class TestController {
+    public function index() {
+        Category::query()->
+    }
+}
+`
+		items := p.GetCompletions("file:///test.php", source, protocol.Position{Line: 7, Character: 27})
+		labels := collectLabels(items)
+		if !labels["with"] {
+			t.Errorf("expected 'with' from Builder via Category::query()->, got %d items", len(items))
+		}
+		if !labels["where"] {
+			t.Error("expected 'where' from Builder via Category::query()->")
+		}
+		if !labels["first"] {
+			t.Error("expected 'first' from Builder via Category::query()->")
+		}
+	})
+
+	// Category::query()->with()-> should still show Builder methods ($this return)
+	t.Run("query()->with()->", func(t *testing.T) {
+		source := `<?php
+namespace App\Http\Controllers;
+
+use App\Models\Category;
+
+class TestController {
+    public function index() {
+        Category::query()->with()->
+    }
+}
+`
+		items := p.GetCompletions("file:///test.php", source, protocol.Position{Line: 7, Character: 35})
+		labels := collectLabels(items)
+		if !labels["where"] {
+			t.Errorf("expected 'where' from Builder via Category::query()->with()->, got %d items", len(items))
+		}
+		if !labels["withGlobalScope"] {
+			t.Error("expected 'withGlobalScope' from Builder via Category::query()->with()->")
+		}
+	})
+
+	// Category::query()->with('products')->orderBy('name')-> should chain further
+	t.Run("deep chain", func(t *testing.T) {
+		source := `<?php
+namespace App\Http\Controllers;
+
+use App\Models\Category;
+
+class TestController {
+    public function index() {
+        Category::query()->with('products')->where('name')->
+    }
+}
+`
+		items := p.GetCompletions("file:///test.php", source, protocol.Position{Line: 7, Character: 60})
+		labels := collectLabels(items)
+		if !labels["get"] {
+			t.Errorf("expected 'get' at end of deep chain, got %d items", len(items))
+		}
+		if !labels["first"] {
+			t.Error("expected 'first' at end of deep chain")
+		}
+	})
 }
 
 func TestLaravelAppCompletionAfterClosedParenIsNotContainer(t *testing.T) {
@@ -416,14 +509,14 @@ class TestController {
 	items := p.GetCompletions("file:///test.php", source, protocol.Position{Line: 5, Character: 24})
 	labels := collectLabels(items)
 
-	if !labels["input"] {
-		t.Errorf("expected 'input' method from Request via app('request')->, got: %v", labels)
+	if !labels["url"] {
+		t.Errorf("expected 'url' method from Request via app('request')->, got labels count: %d", len(labels))
 	}
-	if !labels["all"] {
-		t.Error("expected 'all' method from Request via app('request')->")
+	if !labels["method"] {
+		t.Error("expected 'method' method from Request via app('request')->")
 	}
-	if !labels["header"] {
-		t.Error("expected 'header' method from Request via app('request')->")
+	if !labels["path"] {
+		t.Error("expected 'path' method from Request via app('request')->")
 	}
 }
 
@@ -447,10 +540,10 @@ class TestController {
 	labels := collectLabels(items)
 
 	if !labels["posts"] {
-		t.Errorf("expected 'posts' method from User via app(User::class)->, got: %v", labels)
+		t.Errorf("expected 'posts' method from User via app(User::class)->, got labels count: %d", len(labels))
 	}
-	if !labels["name"] {
-		t.Error("expected 'name' property from User via app(User::class)->")
+	if !labels["initials"] {
+		t.Error("expected 'initials' method from User via app(User::class)->")
 	}
 }
 
@@ -471,8 +564,8 @@ class TestController {
 	items := p.GetCompletions("file:///test.php", source, protocol.Position{Line: 5, Character: 28})
 	labels := collectLabels(items)
 
-	if !labels["input"] {
-		t.Errorf("expected 'input' method from Request via resolve('request')->, got: %v", labels)
+	if !labels["url"] {
+		t.Errorf("expected 'url' method from Request via resolve('request')->, got labels count: %d", len(labels))
 	}
 }
 

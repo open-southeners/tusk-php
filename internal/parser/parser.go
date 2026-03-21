@@ -788,7 +788,7 @@ func (p *structParser) parseUse() {
 	line := p.peek().Line
 	for {
 		t := p.peek()
-		if t.Kind == TokenIdentifier {
+		if t.Kind == TokenIdentifier && t.Value != "as" {
 			parts = append(parts, t.Value)
 			p.advance()
 		} else if t.Kind == TokenBackslash {
@@ -869,7 +869,7 @@ afterMod:
 	if _, ok := p.expect(TokenOpenBrace); !ok {
 		return
 	}
-	cls.Methods, cls.Properties, cls.Constants = p.parseClassBody()
+	cls.Methods, cls.Properties, cls.Constants, cls.Traits = p.parseClassBody()
 	cls.EndLine = p.peek().Line
 	p.result.Classes = append(p.result.Classes, cls)
 }
@@ -904,7 +904,7 @@ func (p *structParser) parseInterface() {
 	if _, ok := p.expect(TokenOpenBrace); !ok {
 		return
 	}
-	iface.Methods, _, _ = p.parseClassBody()
+	iface.Methods, _, _, _ = p.parseClassBody()
 	iface.EndLine = p.peek().Line
 	p.result.Interfaces = append(p.result.Interfaces, iface)
 }
@@ -924,7 +924,7 @@ func (p *structParser) parseTrait() {
 	if _, ok := p.expect(TokenOpenBrace); !ok {
 		return
 	}
-	trait.Methods, trait.Properties, _ = p.parseClassBody()
+	trait.Methods, trait.Properties, _, _ = p.parseClassBody()
 	trait.EndLine = p.peek().Line
 	p.result.Traits = append(p.result.Traits, trait)
 }
@@ -1034,7 +1034,7 @@ func (p *structParser) parseConst() {
 	p.result.Constants = append(p.result.Constants, c)
 }
 
-func (p *structParser) parseClassBody() (methods []MethodDef, props []PropertyDef, consts []ConstantDef) {
+func (p *structParser) parseClassBody() (methods []MethodDef, props []PropertyDef, consts []ConstantDef, traits []string) {
 	depth := 1
 	var docComment string
 	for depth > 0 && p.peek().Kind != TokenEOF {
@@ -1096,6 +1096,37 @@ func (p *structParser) parseClassBody() (methods []MethodDef, props []PropertyDe
 			return
 		}
 		switch p.peek().Kind {
+		case TokenUse:
+			// Trait use statement inside class body: use Foo, Bar { ... };
+			p.advance()
+			var traitNames []string
+			for {
+				if p.peek().Kind == TokenIdentifier || p.peek().Kind == TokenBackslash {
+					name := p.readTypeName()
+					traitNames = append(traitNames, name)
+				}
+				if p.peek().Kind == TokenComma {
+					p.advance()
+					continue
+				}
+				break
+			}
+			// Handle optional conflict resolution block: { ... }
+			if p.peek().Kind == TokenOpenBrace {
+				innerDepth := 1
+				p.advance()
+				for innerDepth > 0 && p.peek().Kind != TokenEOF {
+					if p.peek().Kind == TokenOpenBrace {
+						innerDepth++
+					} else if p.peek().Kind == TokenCloseBrace {
+						innerDepth--
+					}
+					p.advance()
+				}
+			} else {
+				p.expect(TokenSemicolon)
+			}
+			traits = append(traits, traitNames...)
 		case TokenFunction:
 			p.advance()
 			m := MethodDef{

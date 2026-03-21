@@ -68,7 +68,7 @@ func (p *Provider) GetCompletions(uri, source string, pos protocol.Position) []p
 	words := strings.Fields(trimmed)
 	if len(words) >= 1 && (words[len(words)-1] == "new" || (len(words) >= 2 && words[len(words)-2] == "new")) {
 		currentNS := extractNamespace(source)
-		return p.completeNew(prefix, currentNS)
+		return p.completeNew(prefix, currentNS, source, file)
 	}
 	if len(words) >= 1 && words[0] == "use" {
 		currentNS := extractNamespace(source)
@@ -96,7 +96,7 @@ func (p *Provider) GetCompletions(uri, source string, pos protocol.Position) []p
 	if strings.Contains(search, "\\") {
 		return p.completeNamespacePath(search, currentNS)
 	}
-	items := p.completeGlobal(prefix, currentNS)
+	items := p.completeGlobal(prefix, currentNS, source, file)
 	// Add $this if inside a class method
 	lastWord := ""
 	if w := strings.Fields(strings.TrimSpace(prefix)); len(w) > 0 {
@@ -181,39 +181,104 @@ func (p *Provider) completeStaticAccess(source, prefix string, pos protocol.Posi
 
 // resolveChainType resolves the class FQN from the expression before op (-> or ::).
 // Handles: $var->, $this->, self::, static::, parent::, ClassName::,
-// $var::, new ClassName()->, (new ClassName)->, and method chains.
-// Also handles container calls: app('request')->, app(Request::class)->, resolve(...)->
+// $var::, new ClassName()->, (new ClassName)->, method chains, and
+// container calls: app('request')->, app(Request::class)->, resolve(...)->
 func (p *Provider) resolveChainType(source, prefix, op string, pos protocol.Position, file *parser.FileNode) string {
 	idx := strings.LastIndex(prefix, op)
 	if idx < 0 {
 		return ""
 	}
-	before := strings.TrimSpace(prefix[:idx])
+	// wordStart is after the operator (where the member name would be)
+	return p.resolveAccessChain(prefix, idx+len(op), source, pos, file)
+}
 
-	// Check for container call pattern: app('key'), app(Class::class), resolve('key')
-	// Also blocks config('key')-> which returns mixed, not a class
-	if op == "->" {
-		if concrete := p.resolveContainerCallType(before, source, file); concrete != "" {
-			if concrete == "-" {
-				return "" // signal: known call returning mixed, stop resolution
-			}
-			return concrete
-		}
+// resolveAccessChain walks left through a chain of -> and :: accesses in the
+// line text and returns the FQN of the class at that point. wordStart is the
+// position immediately before the operator (-> or ::) to resolve.
+// Handles recursive chains like Category::query()->with('form')->.
+func (p *Provider) resolveAccessChain(line string, wordStart int, source string, pos protocol.Position, file *parser.FileNode) string {
+	i := wordStart
+
+	// Skip whitespace before the operator
+	for i > 0 && (line[i-1] == ' ' || line[i-1] == '\t') {
+		i--
 	}
-
-	// Check for "new ClassName(...)" pattern before ->
-	if op == "->" {
-		if newClass := extractNewClass(before); newClass != "" {
-			return p.resolveClassNameFromSource(newClass, source, file)
-		}
-	}
-
-	// Extract the target token (variable or class name)
-	target := extractTrailingToken(before)
-	if target == "" {
+	if i < 2 {
 		return ""
 	}
 
+	// Detect operator type
+	op := ""
+	if line[i-2] == '-' && line[i-1] == '>' {
+		op = "->"
+		i -= 2
+	} else if line[i-2] == ':' && line[i-1] == ':' {
+		op = "::"
+		i -= 2
+	} else {
+		return ""
+	}
+
+	// Skip whitespace before operator
+	for i > 0 && (line[i-1] == ' ' || line[i-1] == '\t') {
+		i--
+	}
+
+	// Skip past a method call's closing paren: $foo->bar()->baz
+	parenEnd := 0
+	if i > 0 && line[i-1] == ')' {
+		parenEnd = i
+		depth := 1
+		i--
+		for i > 0 && depth > 0 {
+			i--
+			if line[i] == ')' {
+				depth++
+			} else if line[i] == '(' {
+				depth--
+			}
+		}
+
+		// Check for container call pattern (only for ->)
+		if op == "->" && p.container != nil {
+			callExpr := strings.TrimSpace(line[:parenEnd])
+			if concrete := p.resolveContainerCallType(callExpr, source, file); concrete != "" {
+				if concrete == "-" {
+					return ""
+				}
+				return concrete
+			}
+		}
+
+		// Check for "new ClassName(...)" pattern
+		if op == "->" {
+			callExpr := strings.TrimSpace(line[:parenEnd])
+			if newClass := extractNewClass(callExpr); newClass != "" {
+				return p.resolveClassNameFromSource(newClass, source, file)
+			}
+		}
+
+		// Skip whitespace before paren
+		for i > 0 && (line[i-1] == ' ' || line[i-1] == '\t') {
+			i--
+		}
+	}
+
+	// Extract the target word
+	end := i
+	for i > 0 && resolve.IsWordChar(line[i-1]) {
+		i--
+	}
+	// Include $ for variables
+	if i > 0 && line[i-1] == '$' {
+		i--
+	}
+	if i >= end {
+		return ""
+	}
+	target := line[i:end]
+
+	// Resolve the target to a class FQN
 	switch target {
 	case "$this", "self", "static":
 		if file != nil {
@@ -238,70 +303,35 @@ func (p *Provider) resolveChainType(source, prefix, op string, pos protocol.Posi
 		return p.resolver.ResolveVariableType(target, resolve.SplitLines(source), pos, file)
 	}
 
-	// ClassName:: or ClassName->  (static access or after new)
-	fqn := p.resolveClassNameFromSource(target, source, file)
-	if fqn != "" && p.index.Lookup(fqn) != nil {
-		sym := p.index.Lookup(fqn)
-		if sym.Kind == symbols.KindClass || sym.Kind == symbols.KindInterface || sym.Kind == symbols.KindEnum || sym.Kind == symbols.KindTrait {
+	// Try as a class name (for static access or direct use)
+	if fqn := p.resolveClassNameFromSource(target, source, file); fqn != "" {
+		if sym := p.index.Lookup(fqn); sym != nil {
+			switch sym.Kind {
+			case symbols.KindClass, symbols.KindInterface, symbols.KindEnum, symbols.KindTrait:
+				return fqn
+			}
+			// sym exists but is a method/property — don't return a member FQN as a class
+		} else if fqn != target && !strings.Contains(fqn, "::") {
+			// Resolved to a different name (via use statement/namespace) but not in index yet — trust it
+			// Skip if it contains "::" (it's a member FQN, not a class)
 			return fqn
 		}
 	}
 
-	// Method chain resolution: e.g. "Category::query()" where target="query"
-	// Resolve the receiver before target, find target as a method, return its type.
-	if file != nil {
-		ownerFQN := p.resolveChainOwner(before, target, source, pos, file)
-		if ownerFQN != "" {
-			if member := p.resolver.FindMember(ownerFQN, target); member != nil {
-				return p.resolver.MemberType(member, file)
-			}
-		}
+	// Not a class — must be a method/property in a chain.
+	// Recursively resolve the owner, then look up the target as a member.
+	if file == nil {
+		return ""
 	}
-	return ""
-}
-
-// resolveChainOwner resolves the class FQN that owns the given method/property
-// in a chained call expression. For "Category::query()", it resolves "Category".
-func (p *Provider) resolveChainOwner(expr, target, source string, pos protocol.Position, file *parser.FileNode) string {
-	// Strip the target and its parens from the end of the expression
-	// e.g. "Category::query()" → need to find "Category::"
-	i := len(expr)
-	// Skip trailing whitespace
-	for i > 0 && (expr[i-1] == ' ' || expr[i-1] == '\t') {
-		i--
+	ownerFQN := p.resolveAccessChain(line, i, source, pos, file)
+	if ownerFQN == "" {
+		return ""
 	}
-	// Skip closing paren if present
-	if i > 0 && expr[i-1] == ')' {
-		depth := 1
-		i--
-		for i > 0 && depth > 0 {
-			i--
-			if expr[i] == ')' {
-				depth++
-			} else if expr[i] == '(' {
-				depth--
-			}
-		}
-		// Skip whitespace before paren
-		for i > 0 && (expr[i-1] == ' ' || expr[i-1] == '\t') {
-			i--
-		}
+	member := p.resolver.FindMember(ownerFQN, target)
+	if member == nil {
+		return ""
 	}
-	// Skip the target identifier
-	for i > 0 && resolve.IsWordChar(expr[i-1]) {
-		i--
-	}
-	// Check for -> or :: operator before the target
-	if i >= 2 && expr[i-2] == '-' && expr[i-1] == '>' {
-		receiver := strings.TrimSpace(expr[:i-2])
-		return p.resolveChainType(source, receiver+"->", "->", pos, file)
-	}
-	if i >= 2 && expr[i-2] == ':' && expr[i-1] == ':' {
-		receiver := strings.TrimSpace(expr[:i-2])
-		// Resolve the receiver class name
-		return p.resolveClassNameFromSource(receiver, source, file)
-	}
-	return ""
+	return p.resolver.MemberType(member, file)
 }
 
 // resolveClassNameFromSource resolves a short or FQN class name using
@@ -355,47 +385,6 @@ func (p *Provider) resolveClassNameFromSource(name, source string, file *parser.
 		return best.FQN
 	}
 	return name
-}
-
-// extractTrailingToken extracts the last variable or identifier token
-// from a string, handling method call chains by skipping parenthesized args.
-func extractTrailingToken(s string) string {
-	i := len(s)
-	// Skip trailing whitespace
-	for i > 0 && (s[i-1] == ' ' || s[i-1] == '\t') {
-		i--
-	}
-	if i == 0 {
-		return ""
-	}
-	// Skip closing paren (method chain: $foo->bar()-> )
-	if s[i-1] == ')' {
-		depth := 1
-		i--
-		for i > 0 && depth > 0 {
-			i--
-			if s[i] == ')' {
-				depth++
-			} else if s[i] == '(' {
-				depth--
-			}
-		}
-		for i > 0 && (s[i-1] == ' ' || s[i-1] == '\t') {
-			i--
-		}
-	}
-	// Extract the word
-	end := i
-	for i > 0 && resolve.IsWordChar(s[i-1]) {
-		i--
-	}
-	if i > 0 && s[i-1] == '$' {
-		i--
-	}
-	if i >= end {
-		return ""
-	}
-	return s[i:end]
 }
 
 // extractNewClass extracts the class name from patterns like:
@@ -454,7 +443,7 @@ func parenBalanced(s string) bool {
 	return depth == 0
 }
 
-func (p *Provider) completeNew(prefix, currentNS string) []protocol.CompletionItem {
+func (p *Provider) completeNew(prefix, currentNS, source string, file *parser.FileNode) []protocol.CompletionItem {
 	var items []protocol.CompletionItem
 	words := strings.Fields(prefix)
 	search := ""
@@ -468,7 +457,9 @@ func (p *Provider) completeNew(prefix, currentNS string) []protocol.CompletionIt
 		if sym.Kind != symbols.KindClass {
 			continue
 		}
-		items = append(items, protocol.CompletionItem{Label: sym.Name, Kind: protocol.CompletionItemKindClass, Detail: sym.FQN, InsertText: sym.Name + "($0)", InsertTextFormat: 2, SortText: sortPriority(sym, currentNS)})
+		item := protocol.CompletionItem{Label: sym.Name, Kind: protocol.CompletionItemKindClass, Detail: sym.FQN, InsertText: sym.Name + "($0)", InsertTextFormat: 2, SortText: sortPriority(sym, currentNS)}
+		item.AdditionalTextEdits = buildAutoImportEdit(sym.FQN, source, file)
+		items = append(items, item)
 	}
 	return items
 }
@@ -657,7 +648,7 @@ func extractLastWord(prefix string) string {
 	return words[len(words)-1]
 }
 
-func (p *Provider) completeGlobal(prefix, currentNS string) []protocol.CompletionItem {
+func (p *Provider) completeGlobal(prefix, currentNS, source string, file *parser.FileNode) []protocol.CompletionItem {
 	var items []protocol.CompletionItem
 	words := strings.Fields(strings.TrimSpace(prefix))
 	search := ""
@@ -703,7 +694,9 @@ func (p *Provider) completeGlobal(prefix, currentNS string) []protocol.Completio
 		case symbols.KindClass, symbols.KindInterface, symbols.KindEnum, symbols.KindTrait:
 			// Only show type-level symbols when user is actively typing a name
 			if search != "" {
-				items = append(items, protocol.CompletionItem{Label: sym.Name, Kind: symKind(sym.Kind), Detail: sym.FQN, SortText: sortPriority(sym, currentNS)})
+				item := protocol.CompletionItem{Label: sym.Name, Kind: symKind(sym.Kind), Detail: sym.FQN, SortText: sortPriority(sym, currentNS)}
+				item.AdditionalTextEdits = buildAutoImportEdit(sym.FQN, source, file)
+				items = append(items, item)
 			}
 		}
 	}

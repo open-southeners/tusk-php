@@ -1,0 +1,22 @@
+{
+    "packages": [
+        {
+            "name": "symfony/framework-bundle",
+            "install-path": "../symfony/framework-bundle",
+            "autoload": {
+                "psr-4": {
+                    "Symfony\\Bundle\\FrameworkBundle\\": "src/"
+                }
+            }
+        },
+        {
+            "name": "symfony/http-foundation",
+            "install-path": "../symfony/http-foundation",
+            "autoload": {
+                "psr-4": {
+                    "Symfony\\Component\\HttpFoundation\\": "src/"
+                }
+            }
+        }
+    ]
+}

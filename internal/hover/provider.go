@@ -255,8 +255,11 @@ func (p *Provider) resolveAccessChain(line string, wordStart int, lines []string
 	// or a chained property/method (e.g. the "logger" in "$this->logger->info")
 	// First, try as a class name
 	if fqn := p.resolver.ResolveClassName(target, file); fqn != "" {
-		if p.index.Lookup(fqn) != nil {
-			return fqn
+		if sym := p.index.Lookup(fqn); sym != nil {
+			switch sym.Kind {
+			case symbols.KindClass, symbols.KindInterface, symbols.KindEnum, symbols.KindTrait:
+				return fqn
+			}
 		}
 	}
 

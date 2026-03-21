@@ -106,15 +106,16 @@ type Diagnostic struct {
 
 // CompletionItem represents a completion suggestion.
 type CompletionItem struct {
-	Label            string             `json:"label"`
-	Kind             CompletionItemKind `json:"kind"`
-	Detail           string             `json:"detail,omitempty"`
-	Documentation    string             `json:"documentation,omitempty"`
-	InsertText       string             `json:"insertText,omitempty"`
-	InsertTextFormat int                `json:"insertTextFormat,omitempty"`
-	SortText         string             `json:"sortText,omitempty"`
-	FilterText       string             `json:"filterText,omitempty"`
-	Deprecated       bool               `json:"deprecated,omitempty"`
+	Label               string             `json:"label"`
+	Kind                CompletionItemKind `json:"kind"`
+	Detail              string             `json:"detail,omitempty"`
+	Documentation       string             `json:"documentation,omitempty"`
+	InsertText          string             `json:"insertText,omitempty"`
+	InsertTextFormat    int                `json:"insertTextFormat,omitempty"`
+	SortText            string             `json:"sortText,omitempty"`
+	FilterText          string             `json:"filterText,omitempty"`
+	Deprecated          bool               `json:"deprecated,omitempty"`
+	AdditionalTextEdits []TextEdit         `json:"additionalTextEdits,omitempty"`
 }
 
 // Hover represents the result of a hover request.

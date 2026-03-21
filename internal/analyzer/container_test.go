@@ -24,28 +24,31 @@ func readLaravelFile(t *testing.T, relPath string) string {
 	return string(content)
 }
 
+func indexPHPDir(t *testing.T, idx *symbols.Index, root, dir string, src symbols.SymbolSource) {
+	t.Helper()
+	absDir := filepath.Join(root, dir)
+	filepath.Walk(absDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || filepath.Ext(path) != ".php" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, path)
+		idx.IndexFileWithSource("file:///"+rel, string(data), src)
+		return nil
+	})
+}
+
 func setupLaravelAnalyzer(t *testing.T) *Analyzer {
 	t.Helper()
 	root := laravelTestdataPath()
 	idx := symbols.NewIndex()
 	idx.RegisterBuiltins()
 
-	for _, rel := range []string{
-		"app/Models/User.php",
-		"app/Models/Category.php",
-		"app/Services/PaymentGateway.php",
-		"app/Services/StripeGateway.php",
-		"app/Services/CustomMailer.php",
-		"app/Providers/AppServiceProvider.php",
-		"vendor/illuminate/http/src/Request.php",
-	} {
-		src := readLaravelFile(t, rel)
-		source := symbols.SourceProject
-		if strings.HasPrefix(rel, "vendor/") {
-			source = symbols.SourceVendor
-		}
-		idx.IndexFileWithSource("file:///"+rel, src, source)
-	}
+	indexPHPDir(t, idx, root, "app", symbols.SourceProject)
+	indexPHPDir(t, idx, root, "vendor/laravel/framework/src", symbols.SourceVendor)
 
 	ca := container.NewContainerAnalyzer(idx, root, "laravel")
 	ca.Analyze()
@@ -104,20 +107,20 @@ class TestController {
 func TestDefinitionAppChainedMethod(t *testing.T) {
 	a := setupLaravelAnalyzer(t)
 
-	// app('request')->input() — clicking on 'input' should go to Request::input
+	// app('request')->url() — clicking on 'url' should go to Request::url
 	source := `<?php
 namespace App\Http\Controllers;
 
 class TestController {
     public function index() {
-        app('request')->input('key');
+        app('request')->url();
     }
 }
 `
-	pos := protocol.Position{Line: 5, Character: 28} // on 'input'
+	pos := protocol.Position{Line: 5, Character: 26} // on 'url'
 	loc := a.FindDefinition("file:///test.php", source, pos)
 	if loc == nil {
-		t.Fatal("expected definition for input() on app('request')->input()")
+		t.Fatal("expected definition for url() on app('request')->url()")
 	}
 	if !strings.Contains(loc.URI, "Request.php") {
 		t.Errorf("expected URI containing Request.php, got %s", loc.URI)

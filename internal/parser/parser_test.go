@@ -366,3 +366,47 @@ class Foo {
 		t.Errorf("expected 0 top-level functions, got %d", len(result.Functions))
 	}
 }
+
+func TestParseTraitUseWithConflictResolution(t *testing.T) {
+	source := `<?php
+namespace Illuminate\Database\Eloquent;
+
+class Builder {
+    use BuildsQueries, ForwardsCalls, QueriesRelationships {
+        BuildsQueries::sole as baseSole;
+    }
+
+    protected $query;
+    protected $model;
+
+    public function with($relations, $callback = null) {
+        return $this;
+    }
+
+    public function where($column, $operator = null, $value = null) {
+        return $this;
+    }
+
+    public function first($columns = ['*']) {
+        return null;
+    }
+}
+`
+	result := New().Parse(source)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Classes) != 1 {
+		t.Fatalf("expected 1 class, got %d", len(result.Classes))
+	}
+	cls := result.Classes[0]
+	if cls.Name != "Builder" {
+		t.Errorf("expected class 'Builder', got %q", cls.Name)
+	}
+	if len(cls.Methods) < 3 {
+		t.Errorf("expected at least 3 methods (with, where, first), got %d", len(cls.Methods))
+		for _, m := range cls.Methods {
+			t.Logf("  method: %s", m.Name)
+		}
+	}
+}
