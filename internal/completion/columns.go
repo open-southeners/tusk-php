@@ -370,7 +370,7 @@ func (p *Provider) findModelInChain(expr, source string, pos protocol.Position, 
 	// Try resolving variables: $query = Category::query()
 	// The chain resolver handles this via variable type resolution
 	if strings.HasPrefix(trimmed, "$") || strings.Contains(trimmed, "->") {
-		resolved := p.resolveExpressionType(trimmed, source, pos, file)
+		resolved := p.ResolveExpressionType(trimmed, source, pos, file)
 		if resolved != "" && p.isEloquentModel(resolved) {
 			return resolved
 		}

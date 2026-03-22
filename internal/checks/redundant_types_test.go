@@ -86,6 +86,31 @@ class Foo {
 		assertNoFindings(t, findings)
 	})
 
+	t.Run("nullsafe on always null expression flagged as warning", func(t *testing.T) {
+		source := `<?php
+class Foo {
+    public function bar(): void {
+        $x = null;
+        $x?->name;
+    }
+}
+`
+		file := parser.ParseFile(source)
+		rule := &RedundantNullsafeRule{
+			TypeResolver: func(expr, source string, line int, file *parser.FileNode) string {
+				return "null"
+			},
+		}
+		findings := rule.Check(file, source, nil)
+		assertFindingCodes(t, findings, []string{"redundant-nullsafe"})
+		if findings[0].Severity != SeverityWarning {
+			t.Errorf("expected SeverityWarning for always-null, got %d", findings[0].Severity)
+		}
+		if !containsStr(findings[0].Message, "always null") {
+			t.Errorf("expected 'always null' message, got: %s", findings[0].Message)
+		}
+	})
+
 	t.Run("no type resolver is no-op", func(t *testing.T) {
 		source := `<?php
 class Foo {

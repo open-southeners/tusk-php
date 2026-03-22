@@ -95,6 +95,16 @@ type Location struct {
 	Range Range  `json:"range"`
 }
 
+// DiagnosticTag as defined by LSP spec.
+type DiagnosticTag int
+
+const (
+	// DiagnosticTagUnnecessary marks code as unused or unnecessary (editors grey it out).
+	DiagnosticTagUnnecessary DiagnosticTag = 1
+	// DiagnosticTagDeprecated marks code as deprecated (editors strike-through it).
+	DiagnosticTagDeprecated DiagnosticTag = 2
+)
+
 // Diagnostic represents a diagnostic (error, warning, etc.).
 type Diagnostic struct {
 	Range    Range              `json:"range"`
@@ -102,6 +112,7 @@ type Diagnostic struct {
 	Source   string             `json:"source,omitempty"`
 	Message  string             `json:"message"`
 	Code     string             `json:"code,omitempty"`
+	Tags     []DiagnosticTag    `json:"tags,omitempty"`
 }
 
 // CompletionItem represents a completion suggestion.

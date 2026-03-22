@@ -23,13 +23,14 @@ type Provider struct {
 func NewProvider(index *symbols.Index, ca *container.ContainerAnalyzer, framework string) *Provider {
 	p := &Provider{index: index, container: ca, resolver: resolve.NewResolver(index), framework: framework}
 	// Wire up chain resolution so ResolveVariableType can handle $var = Class::method()->chain()
-	p.resolver.ChainResolver = p.resolveExpressionType
+	p.resolver.ChainResolver = p.ResolveExpressionType
 	return p
 }
 
-// resolveExpressionType resolves the type of an expression like "Category::first()"
-// or "$foo->bar()->baz()". Used as the ChainResolver callback.
-func (p *Provider) resolveExpressionType(expr string, source string, pos protocol.Position, file *parser.FileNode) string {
+// ResolveExpressionType resolves the type of an expression like "Category::first()"
+// or "$foo->bar()->baz()". Used as the ChainResolver callback and exposed for
+// diagnostics type resolution.
+func (p *Provider) ResolveExpressionType(expr string, source string, pos protocol.Position, file *parser.FileNode) string {
 	expr = strings.TrimSpace(expr)
 	if expr == "" {
 		return ""

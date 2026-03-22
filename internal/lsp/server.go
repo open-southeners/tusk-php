@@ -21,6 +21,7 @@ import (
 	"github.com/open-southeners/php-lsp/internal/diagnostics"
 	"github.com/open-southeners/php-lsp/internal/hover"
 	"github.com/open-southeners/php-lsp/internal/models"
+	"github.com/open-southeners/php-lsp/internal/parser"
 	"github.com/open-southeners/php-lsp/internal/protocol"
 	"github.com/open-southeners/php-lsp/internal/symbols"
 )
@@ -253,6 +254,10 @@ func (s *Server) handleInitialize(msg *jsonRPCMessage) {
 	s.hover = hover.NewProvider(s.index, s.container, s.framework)
 	s.hover.SetArrayResolver(arrayResolver)
 	s.diag = diagnostics.NewProvider(s.index, s.framework, s.rootPath, s.logger, s.cfg)
+	s.diag.TypeResolver = func(expr, source string, line int, file *parser.FileNode) string {
+		return s.completion.ResolveExpressionType(expr, source, protocol.Position{Line: line}, file)
+	}
+	s.diag.BuilderMemberChecker = diagnostics.NewIndexMemberChecker(s.index)
 	s.analyzer = analyzer.NewAnalyzer(s.index, s.container)
 	s.sendResponse(msg.ID, protocol.InitializeResult{
 		Capabilities: protocol.ServerCapabilities{
@@ -362,6 +367,7 @@ func (s *Server) handleDidSave(msg *jsonRPCMessage) {
 			filePath := strings.TrimPrefix(uri, "file://")
 			s.diag.RunTools(uri, filePath)
 			source := s.getDocument(uri)
+			s.diag.AnalyzeOnSave(uri, source)
 			s.publishDiagnostics(uri, source)
 		})
 	}

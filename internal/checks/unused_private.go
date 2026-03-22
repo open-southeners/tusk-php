@@ -61,6 +61,7 @@ func checkUnusedPrivateMethods(cls parser.ClassNode, lines []string) []Finding {
 			Severity:  SeverityInfo,
 			Code:      "unused-private-method",
 			Message:   fmt.Sprintf("Private method '%s::%s' is never used", cls.Name, m.Name),
+			Tags:      []Tag{TagUnnecessary},
 		})
 	}
 	return findings
@@ -88,6 +89,7 @@ func checkUnusedPrivateProperties(cls parser.ClassNode, lines []string) []Findin
 			Severity:  SeverityHint,
 			Code:      "unused-private-property",
 			Message:   fmt.Sprintf("Private property '%s::$%s' is never used", cls.Name, propName),
+			Tags:      []Tag{TagUnnecessary},
 		})
 	}
 	return findings

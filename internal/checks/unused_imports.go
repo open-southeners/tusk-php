@@ -39,6 +39,7 @@ func (r *UnusedImportsRule) Check(file *parser.FileNode, source string, _ *symbo
 			Severity:  SeverityHint,
 			Code:      "unused-import",
 			Message:   fmt.Sprintf("Unused import '%s'", u.FullName),
+			Tags:      []Tag{TagUnnecessary},
 		})
 	}
 	return findings

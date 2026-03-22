@@ -230,4 +230,15 @@ Category::with('nonexistent.tags');
 		findings := rule.Check(file, source, nil)
 		assertFindingCodes(t, findings, []string{"unknown-relation"})
 	})
+
+	t.Run("orderBy with dot notation skipped", func(t *testing.T) {
+		source := `<?php
+use App\Models\Category;
+Category::orderBy('relation.column');
+`
+		file := parser.ParseFile(source)
+		findings := rule.Check(file, source, nil)
+		// Dot-notation in column methods is join-qualified — skip validation
+		assertNoFindings(t, findings)
+	})
 }

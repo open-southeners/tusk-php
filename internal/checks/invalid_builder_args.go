@@ -134,10 +134,8 @@ func (r *InvalidBuilderArgRule) validateArg(method, argValue string, lineNum, st
 	// Strip " as alias" (e.g., "products as product_count")
 	argValue = stripAlias(argValue)
 
-	// For dot-notation (eager loading), validate the first segment
-	segments := strings.SplitN(argValue, ".", 2)
-	checkName := segments[0]
-
+	// For dot-notation in column methods (e.g., orderBy('relation.column')),
+	// skip validation — it requires join context we don't have.
 	isRelMethod := builderRelationMethods[method]
 	isColMethod := builderColumnMethods[method]
 	isDBColMethod := builderDBColumnMethods[method]
@@ -145,6 +143,22 @@ func (r *InvalidBuilderArgRule) validateArg(method, argValue string, lineNum, st
 	if !isRelMethod && !isColMethod && !isDBColMethod {
 		return nil
 	}
+
+	// For dot-notation, validate the first segment only
+	segments := strings.SplitN(argValue, ".", 2)
+	checkName := segments[0]
+
+	// Column methods with dot-notation are join-qualified — skip
+	if len(segments) > 1 && !isRelMethod {
+		return nil
+	}
+
+	// Handle closure-based array syntax: 'products' => function($q) {...}
+	// The regex captures 'products' before '=>', strip anything after =>
+	if idx := strings.Index(checkName, " =>"); idx >= 0 {
+		checkName = checkName[:idx]
+	}
+	checkName = strings.TrimSpace(checkName)
 
 	// Resolve the model from the line prefix up to the method call
 	prefix := extractPrefixBefore(line, method)

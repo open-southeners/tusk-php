@@ -51,7 +51,17 @@ func (r *RedundantNullsafeRule) Check(file *parser.FileNode, source string, _ *s
 
 			if expr != "" {
 				resolved := r.TypeResolver(expr, source, i, file)
-				if resolved != "" && !isNullable(resolved) {
+				if resolved == "null" {
+					findings = append(findings, Finding{
+						StartLine: i,
+						StartCol:  absPos,
+						EndLine:   i,
+						EndCol:    absPos + 3,
+						Severity:  SeverityWarning,
+						Code:      "redundant-nullsafe",
+						Message:   "Expression is always null, method call will never execute",
+					})
+				} else if resolved != "" && !isNullable(resolved) {
 					findings = append(findings, Finding{
 						StartLine: i,
 						StartCol:  absPos,

@@ -25,10 +25,24 @@ type Config struct {
 	PintPath           string   `json:"pintPath,omitempty"`
 	PintConfig         string   `json:"pintConfig,omitempty"`
 	DatabaseEnabled    *bool    `json:"databaseEnabled,omitempty"`
-	MaxIndexFiles      int      `json:"maxIndexFiles"`
-	StubsPath          string   `json:"stubsPath"`
-	LogLevel           string   `json:"logLevel"`
-	LogFile            string   `json:"logFile"`
+	DiagnosticRules    map[string]bool `json:"diagnosticRules,omitempty"`
+	MaxIndexFiles      int             `json:"maxIndexFiles"`
+	StubsPath          string          `json:"stubsPath"`
+	LogLevel           string          `json:"logLevel"`
+	LogFile            string          `json:"logFile"`
+}
+
+// IsRuleEnabled returns whether a diagnostic rule is enabled.
+// Rules default to enabled if not explicitly configured.
+func (c *Config) IsRuleEnabled(code string) bool {
+	if c.DiagnosticRules == nil {
+		return true
+	}
+	enabled, ok := c.DiagnosticRules[code]
+	if !ok {
+		return true
+	}
+	return enabled
 }
 
 func DefaultConfig() *Config {

@@ -8,6 +8,14 @@ import (
 	"github.com/open-southeners/php-lsp/internal/symbols"
 )
 
+// Tag mirrors LSP DiagnosticTag values.
+type Tag int
+
+const (
+	TagUnnecessary Tag = 1
+	TagDeprecated  Tag = 2
+)
+
 // Finding represents a single diagnostic result.
 type Finding struct {
 	StartLine int
@@ -17,6 +25,7 @@ type Finding struct {
 	Severity  Severity
 	Code      string // machine-readable: "unused-import", "unused-private-method", etc.
 	Message   string // human-readable description
+	Tags      []Tag  // optional LSP diagnostic tags (Unnecessary, Deprecated)
 }
 
 // Severity levels mirror LSP DiagnosticSeverity values.
