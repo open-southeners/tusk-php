@@ -1,6 +1,6 @@
 .PHONY: build install test clean dev cross-build vscode-ext vscode-package zed-ext zed-package
 
-VERSION ?= 0.1.0
+VERSION ?= 0.2.0
 BINARY  := php-lsp
 LDFLAGS := -ldflags="-s -w -X main.version=$(VERSION)"
 DIST_DIR := dist
