@@ -6,8 +6,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/open-southeners/php-lsp/internal/parser"
-	"github.com/open-southeners/php-lsp/internal/protocol"
+	"github.com/open-southeners/tusk-php/internal/parser"
+	"github.com/open-southeners/tusk-php/internal/protocol"
 )
 
 type SymbolKind int

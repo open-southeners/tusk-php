@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/open-southeners/php-lsp/internal/config"
-	"github.com/open-southeners/php-lsp/internal/protocol"
+	"github.com/open-southeners/tusk-php/internal/config"
+	"github.com/open-southeners/tusk-php/internal/protocol"
 )
 
 type phpstanRunner struct {

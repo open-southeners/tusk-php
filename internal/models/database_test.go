@@ -8,8 +8,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/open-southeners/php-lsp/internal/config"
-	"github.com/open-southeners/php-lsp/internal/symbols"
+	"github.com/open-southeners/tusk-php/internal/config"
+	"github.com/open-southeners/tusk-php/internal/symbols"
 )
 
 func TestSQLTypeMapping(t *testing.T) {

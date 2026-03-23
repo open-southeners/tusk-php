@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/open-southeners/php-lsp/internal/lsp"
+	"github.com/open-southeners/tusk-php/internal/lsp"
 )
 
 var (

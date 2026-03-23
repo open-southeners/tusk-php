@@ -3,9 +3,9 @@ package completion
 import (
 	"strings"
 
-	"github.com/open-southeners/php-lsp/internal/protocol"
-	"github.com/open-southeners/php-lsp/internal/resolve"
-	"github.com/open-southeners/php-lsp/internal/types"
+	"github.com/open-southeners/tusk-php/internal/protocol"
+	"github.com/open-southeners/tusk-php/internal/resolve"
+	"github.com/open-southeners/tusk-php/internal/types"
 )
 
 type configResultArrayContext struct {

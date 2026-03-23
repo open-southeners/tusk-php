@@ -3,7 +3,7 @@ package hover
 import (
 	"strings"
 
-	"github.com/open-southeners/php-lsp/internal/symbols"
+	"github.com/open-southeners/tusk-php/internal/symbols"
 )
 
 // phpManualURL returns a PHP manual URL for built-in symbols, or empty string for user-defined ones.

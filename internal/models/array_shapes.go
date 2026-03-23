@@ -5,10 +5,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/open-southeners/php-lsp/internal/parser"
-	"github.com/open-southeners/php-lsp/internal/phparray"
-	"github.com/open-southeners/php-lsp/internal/symbols"
-	"github.com/open-southeners/php-lsp/internal/types"
+	"github.com/open-southeners/tusk-php/internal/parser"
+	"github.com/open-southeners/tusk-php/internal/phparray"
+	"github.com/open-southeners/tusk-php/internal/symbols"
+	"github.com/open-southeners/tusk-php/internal/types"
 )
 
 // FrameworkArrayResolver provides array key suggestions for framework-specific

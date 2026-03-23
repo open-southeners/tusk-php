@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/open-southeners/php-lsp/internal/symbols"
+	"github.com/open-southeners/tusk-php/internal/symbols"
 )
 
 func setupEloquentIndex(t *testing.T, modelSource string) *symbols.Index {

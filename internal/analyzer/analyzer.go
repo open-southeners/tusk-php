@@ -5,12 +5,12 @@ import (
 	"os"
 	"strings"
 
-	"github.com/open-southeners/php-lsp/internal/composer"
-	"github.com/open-southeners/php-lsp/internal/container"
-	"github.com/open-southeners/php-lsp/internal/parser"
-	"github.com/open-southeners/php-lsp/internal/protocol"
-	"github.com/open-southeners/php-lsp/internal/resolve"
-	"github.com/open-southeners/php-lsp/internal/symbols"
+	"github.com/open-southeners/tusk-php/internal/composer"
+	"github.com/open-southeners/tusk-php/internal/container"
+	"github.com/open-southeners/tusk-php/internal/parser"
+	"github.com/open-southeners/tusk-php/internal/protocol"
+	"github.com/open-southeners/tusk-php/internal/resolve"
+	"github.com/open-southeners/tusk-php/internal/symbols"
 )
 
 type Analyzer struct {

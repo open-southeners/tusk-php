@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/open-southeners/php-lsp/internal/composer"
-	"github.com/open-southeners/php-lsp/internal/protocol"
+	"github.com/open-southeners/tusk-php/internal/composer"
+	"github.com/open-southeners/tusk-php/internal/protocol"
 )
 
 func TestMoveToNamespaceUpdatesDeclaration(t *testing.T) {

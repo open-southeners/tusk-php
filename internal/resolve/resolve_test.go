@@ -3,9 +3,9 @@ package resolve
 import (
 	"testing"
 
-	"github.com/open-southeners/php-lsp/internal/parser"
-	"github.com/open-southeners/php-lsp/internal/protocol"
-	"github.com/open-southeners/php-lsp/internal/symbols"
+	"github.com/open-southeners/tusk-php/internal/parser"
+	"github.com/open-southeners/tusk-php/internal/protocol"
+	"github.com/open-southeners/tusk-php/internal/symbols"
 )
 
 func setupResolver() *Resolver {

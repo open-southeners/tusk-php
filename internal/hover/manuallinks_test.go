@@ -3,7 +3,7 @@ package hover
 import (
 	"testing"
 
-	"github.com/open-southeners/php-lsp/internal/symbols"
+	"github.com/open-southeners/tusk-php/internal/symbols"
 )
 
 func TestPhpManualURLFunction(t *testing.T) {

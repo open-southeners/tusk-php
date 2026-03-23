@@ -3,7 +3,7 @@ package parser
 import (
 	"strings"
 
-	"github.com/open-southeners/php-lsp/internal/types"
+	"github.com/open-southeners/tusk-php/internal/types"
 )
 
 // Compatibility types kept for older callers that still expect the previous AST shape.

@@ -3,7 +3,7 @@ package checks
 import (
 	"testing"
 
-	"github.com/open-southeners/php-lsp/internal/parser"
+	"github.com/open-southeners/tusk-php/internal/parser"
 )
 
 func TestUnusedImportsRule(t *testing.T) {

@@ -3,7 +3,7 @@ package completion
 import (
 	"testing"
 
-	"github.com/open-southeners/php-lsp/internal/protocol"
+	"github.com/open-southeners/tusk-php/internal/protocol"
 )
 
 func TestExtractBuilderArgContext(t *testing.T) {

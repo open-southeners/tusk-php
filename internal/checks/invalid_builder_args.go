@@ -5,8 +5,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/open-southeners/php-lsp/internal/parser"
-	"github.com/open-southeners/php-lsp/internal/symbols"
+	"github.com/open-southeners/tusk-php/internal/parser"
+	"github.com/open-southeners/tusk-php/internal/symbols"
 )
 
 // Builder method categories — mirrors the lists in completion/columns.go.

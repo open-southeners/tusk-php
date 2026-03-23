@@ -7,8 +7,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/open-southeners/php-lsp/internal/parser"
-	"github.com/open-southeners/php-lsp/internal/symbols"
+	"github.com/open-southeners/tusk-php/internal/parser"
+	"github.com/open-southeners/tusk-php/internal/symbols"
 )
 
 // Doctrine SQL type → PHP type mapping.

@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/open-southeners/php-lsp/internal/protocol"
+	"github.com/open-southeners/tusk-php/internal/protocol"
 )
 
 // Config holds the LSP server configuration.

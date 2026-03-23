@@ -17,8 +17,8 @@ This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.
 ### Development Setup
 
 ```bash
-git clone https://github.com/open-southeners/php-lsp.git
-cd php-lsp
+git clone https://github.com/open-southeners/tusk-php.git
+cd tusk-php
 
 # Build the server
 make build
@@ -78,7 +78,7 @@ make vscode-package
 
 ### Before You Start
 
-- Check [existing issues](https://github.com/open-southeners/php-lsp/issues) to avoid duplicate work
+- Check [existing issues](https://github.com/open-southeners/tusk-php/issues) to avoid duplicate work
 - For larger changes, open an issue first to discuss the approach
 
 ### Pull Request Process
@@ -104,7 +104,7 @@ Tests use `testdata/project/` which contains a mock PHP project with `composer.j
 
 ## Reporting Bugs
 
-- Use the [GitHub issue tracker](https://github.com/open-southeners/php-lsp/issues)
+- Use the [GitHub issue tracker](https://github.com/open-southeners/tusk-php/issues)
 - Include your editor, OS, PHP version, and steps to reproduce
 - Attach the server log (`--log /tmp/php-lsp.log`) if relevant
 

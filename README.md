@@ -190,7 +190,7 @@ curl -fsSL https://raw.githubusercontent.com/open-southeners/tusk-php/main/scrip
 **From source** (requires Go 1.22+):
 
 ```bash
-git clone https://github.com/open-southeners/php-lsp.git && cd php-lsp && make install
+git clone https://github.com/open-southeners/tusk-php.git && cd tusk-php && make install
 ```
 
 ## Configuration

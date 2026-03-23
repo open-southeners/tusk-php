@@ -1,4 +1,4 @@
-module github.com/open-southeners/php-lsp
+module github.com/open-southeners/tusk-php
 
 go 1.25.0
 

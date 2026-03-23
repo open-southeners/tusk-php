@@ -5,7 +5,7 @@ package phparray
 import (
 	"strings"
 
-	"github.com/open-southeners/php-lsp/internal/types"
+	"github.com/open-southeners/tusk-php/internal/types"
 )
 
 // ParseLiteralToShape parses a PHP array literal string (e.g. "['key' => 'value']")

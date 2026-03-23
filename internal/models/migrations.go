@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/open-southeners/php-lsp/internal/symbols"
+	"github.com/open-southeners/tusk-php/internal/symbols"
 )
 
 // MigrationColumn represents a column discovered from a migration file.

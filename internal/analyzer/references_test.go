@@ -3,7 +3,7 @@ package analyzer
 import (
 	"testing"
 
-	"github.com/open-southeners/php-lsp/internal/protocol"
+	"github.com/open-southeners/tusk-php/internal/protocol"
 )
 
 func TestFindAllReferencesClass(t *testing.T) {

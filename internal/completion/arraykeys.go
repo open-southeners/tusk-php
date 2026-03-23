@@ -3,12 +3,12 @@ package completion
 import (
 	"strings"
 
-	"github.com/open-southeners/php-lsp/internal/parser"
-	"github.com/open-southeners/php-lsp/internal/phparray"
-	"github.com/open-southeners/php-lsp/internal/protocol"
-	"github.com/open-southeners/php-lsp/internal/resolve"
-	"github.com/open-southeners/php-lsp/internal/symbols"
-	"github.com/open-southeners/php-lsp/internal/types"
+	"github.com/open-southeners/tusk-php/internal/parser"
+	"github.com/open-southeners/tusk-php/internal/phparray"
+	"github.com/open-southeners/tusk-php/internal/protocol"
+	"github.com/open-southeners/tusk-php/internal/resolve"
+	"github.com/open-southeners/tusk-php/internal/symbols"
+	"github.com/open-southeners/tusk-php/internal/types"
 )
 
 // arrayKeyContext holds the parsed context for array key completion.
