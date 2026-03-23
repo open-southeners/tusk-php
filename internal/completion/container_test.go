@@ -79,14 +79,18 @@ func setupSymfonyIndex(t *testing.T) (*symbols.Index, *container.ContainerAnalyz
 		idx.IndexFileWithSource("file:///"+rel, src, symbols.SourceProject)
 	}
 
-	// Index vendor files
+	// Index vendor files (real Composer layout)
 	for _, rel := range []string{
-		"vendor/symfony/framework-bundle/src/Controller/AbstractController.php",
-		"vendor/symfony/http-foundation/src/Request.php",
-		"vendor/symfony/http-foundation/src/Response.php",
-		"vendor/symfony/http-foundation/src/JsonResponse.php",
+		"vendor/symfony/framework-bundle/Controller/AbstractController.php",
+		"vendor/symfony/http-foundation/Request.php",
+		"vendor/symfony/http-foundation/Response.php",
+		"vendor/symfony/http-foundation/JsonResponse.php",
 	} {
-		src := mustReadFile(t, filepath.Join(root, rel))
+		path := filepath.Join(root, rel)
+		if _, err := os.Stat(path); err != nil {
+			continue // skip if not installed
+		}
+		src := mustReadFile(t, path)
 		idx.IndexFileWithSource("file:///"+rel, src, symbols.SourceVendor)
 	}
 
