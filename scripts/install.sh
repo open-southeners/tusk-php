@@ -13,7 +13,7 @@ if command -v go &> /dev/null; then
     go build -ldflags="-s -w -X main.version=${VERSION}" -trimpath -o "${INSTALL_DIR}/php-lsp" ./cmd/php-lsp/
 else
     echo "Downloading binary..."
-    curl -fsSL -o "${INSTALL_DIR}/php-lsp" "https://github.com/open-southeners/php-lsp/releases/download/v${VERSION}/php-lsp-${OS}-${ARCH}"
+    curl -fsSL -o "${INSTALL_DIR}/php-lsp" "https://github.com/open-southeners/php-lsp/releases/download/v${VERSION}/tusk-php-${OS}-${ARCH}"
     chmod +x "${INSTALL_DIR}/php-lsp"
 fi
 echo "Installed to ${INSTALL_DIR}/php-lsp"
