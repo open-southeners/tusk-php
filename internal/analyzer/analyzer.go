@@ -55,8 +55,11 @@ func (a *Analyzer) FindDefinition(uri, source string, pos protocol.Position) *pr
 		wordStart--
 	}
 
+	// Join multi-line chains so resolveAccessChain can walk the full expression.
+	chainLine, chainWordStart := resolve.JoinChainLines(lines, pos.Line, wordStart)
+
 	// Check for -> or :: access (method/property on a class)
-	if classFQN := a.resolveAccessChain(line, wordStart, source, pos, file); classFQN != "" {
+	if classFQN := a.resolveAccessChain(chainLine, chainWordStart, source, pos, file); classFQN != "" {
 		if sym := a.resolver.FindMember(classFQN, word); sym != nil {
 			return symbolLocation(sym)
 		}

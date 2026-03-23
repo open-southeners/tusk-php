@@ -311,6 +311,32 @@ func IsWordChar(ch byte) bool {
 	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '\\'
 }
 
+// JoinChainLines joins the current line with preceding continuation lines
+// that form a method chain. When a line's meaningful content starts with
+// -> or ::, the previous line is prepended (trimmed) to form a single
+// expression. This allows resolveAccessChain to walk multi-line chains.
+// Returns the joined line and the adjusted character offset within it.
+func JoinChainLines(lines []string, lineNum, character int) (string, int) {
+	if lineNum < 0 || lineNum >= len(lines) {
+		return "", character
+	}
+	joined := lines[lineNum]
+	offset := character
+
+	// Walk backward, prepending lines as long as the current joined line
+	// starts with a chain continuation operator (-> or ::).
+	for i := lineNum - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(joined)
+		if !strings.HasPrefix(trimmed, "->") && !strings.HasPrefix(trimmed, "::") && !strings.HasPrefix(trimmed, "?->") {
+			break
+		}
+		prev := strings.TrimRight(lines[i], " \t")
+		offset += len(prev)
+		joined = prev + joined
+	}
+	return joined, offset
+}
+
 // SplitLines splits source into lines. Use this once per request,
 // then pass the result to LineAt/WordAt to avoid repeated splitting.
 func SplitLines(source string) []string {

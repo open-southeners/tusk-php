@@ -49,11 +49,20 @@ func (p *Provider) SetArrayResolver(resolver *models.FrameworkArrayResolver) {
 }
 
 func (p *Provider) GetCompletions(uri, source string, pos protocol.Position) []protocol.CompletionItem {
-	line := resolve.GetLineAt(source, pos.Line)
+	lines := resolve.SplitLines(source)
+	line := resolve.LineAt(lines, pos.Line)
 	prefix := ""
 	if pos.Character <= len(line) {
 		prefix = line[:pos.Character]
 	}
+
+	// Join multi-line chains: if the current line is a continuation (starts with ->),
+	// prepend previous lines so the chain resolver can see the full expression.
+	joinedLine, joinedChar := resolve.JoinChainLines(lines, pos.Line, pos.Character)
+	if joinedChar > pos.Character && joinedChar <= len(joinedLine) {
+		prefix = joinedLine[:joinedChar]
+	}
+
 	trimmed := strings.TrimSpace(prefix)
 
 	// Check if there's already a '(' after the cursor (skip remaining identifier chars)
