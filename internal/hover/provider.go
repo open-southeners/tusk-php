@@ -20,6 +20,9 @@ type Provider struct {
 	resolver      *resolve.Resolver
 	framework     string
 	arrayResolver *models.FrameworkArrayResolver
+	// GenericTypeResolver resolves a method member's return type with generic context.
+	// Set by the LSP server after initialization by wiring to the completion provider.
+	GenericTypeResolver func(prefix, op, source string, pos protocol.Position, file *parser.FileNode) resolve.ResolvedType
 }
 
 func NewProvider(index *symbols.Index, ca *container.ContainerAnalyzer, framework string) *Provider {
@@ -117,6 +120,23 @@ func (p *Provider) GetHover(uri, source string, pos protocol.Position) *protocol
 	if classFQN := p.resolveAccessChain(chainLine, chainWordStart, lines, pos, file); classFQN != "" {
 		if sym := p.resolver.FindMember(classFQN, word); sym != nil {
 			content := p.formatHover(sym)
+
+			// Enhance with generic return type if available
+			if sym.Kind == symbols.KindMethod && p.GenericTypeResolver != nil {
+				// Build prefix up to the current word for typed resolution
+				hoverPrefix := chainLine[:chainWordStart]
+				for op, suffix := range map[string]string{"->": "->", "::": "::"} {
+					if strings.HasSuffix(strings.TrimSpace(hoverPrefix), op) {
+						rt := p.GenericTypeResolver(hoverPrefix+word+"()", suffix, source, pos, file)
+						if rt.IsGeneric() || (rt.Nullable && rt.FQN != "") {
+							content = replaceReturnType(content, rt.String())
+						}
+						break
+					}
+					_ = suffix
+				}
+			}
+
 			if content != "" {
 				return &protocol.Hover{Contents: protocol.MarkupContent{Kind: "markdown", Value: content}}
 			}

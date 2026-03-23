@@ -57,6 +57,13 @@ type Symbol struct {
 	BackedType string
 	Value      string
 	IsVirtual  bool
+	Templates  []TemplateParam
+}
+
+// TemplateParam represents a generic type parameter on a class: @template T of Model
+type TemplateParam struct {
+	Name  string
+	Bound string
 }
 
 type ParamInfo struct {
@@ -428,6 +435,16 @@ func (idx *Index) indexVirtualMembers(uri string, parent *Symbol, src SymbolSour
 		return
 	}
 	fqn := parent.FQN
+
+	// Populate template parameters from @template tags
+	for _, tmpl := range doc.Templates {
+		if tmpl.Name != "" {
+			parent.Templates = append(parent.Templates, TemplateParam{
+				Name:  tmpl.Name,
+				Bound: resolve(tmpl.Bound),
+			})
+		}
+	}
 
 	for _, prop := range doc.Properties {
 		if prop.Name == "" {

@@ -166,6 +166,12 @@ type DocMethod struct {
 	Description string
 }
 
+// DocTemplate represents a @template tag: @template T of SomeClass
+type DocTemplate struct {
+	Name  string // e.g., "T", "TModel"
+	Bound string // e.g., "SomeClass" (from "of SomeClass"), or "" if unbounded
+}
+
 type DocBlock struct {
 	Summary       string
 	Tags          map[string][]string
@@ -174,6 +180,7 @@ type DocBlock struct {
 	Throws        []DocThrow
 	Properties    []DocProperty
 	Methods       []DocMethod
+	Templates     []DocTemplate
 	Deprecated    bool
 	DeprecatedMsg string
 }
@@ -244,6 +251,8 @@ func ParseDocBlock(raw string) *DocBlock {
 				doc.Properties = append(doc.Properties, parseDocProperty(value, false, true))
 			case "method":
 				doc.Methods = append(doc.Methods, parseDocMethod(value))
+			case "template":
+				doc.Templates = append(doc.Templates, parseDocTemplate(value))
 			}
 			continue
 		}
@@ -308,6 +317,20 @@ func parseDocThrow(value string) DocThrow {
 		th.Description = strings.TrimSpace(parts[1])
 	}
 	return th
+}
+
+// parseDocTemplate parses "@template TModel" or "@template TModel of SomeClass".
+func parseDocTemplate(value string) DocTemplate {
+	t := DocTemplate{}
+	parts := strings.Fields(value)
+	if len(parts) >= 1 {
+		t.Name = parts[0]
+	}
+	// Check for "of Bound" syntax: @template TModel of Model
+	if len(parts) >= 3 && parts[1] == "of" {
+		t.Bound = parts[2]
+	}
+	return t
 }
 
 // parseDocProperty parses "@property Type $name Description" into structured DocProperty.

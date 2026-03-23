@@ -211,6 +211,22 @@ func shortName(fqn string) string {
 	return fqn
 }
 
+// replaceReturnType replaces the return type in a hover markdown code block
+// with a more specific generic type. E.g., replaces ": Collection" with ": Collection<int, Category>".
+func replaceReturnType(content, newType string) string {
+	// Look for ): Type pattern in the code block
+	if idx := strings.Index(content, "): "); idx >= 0 {
+		endOfType := idx + 3
+		// Find the end of the type (next newline or end of code block)
+		end := strings.IndexAny(content[endOfType:], "\n`")
+		if end >= 0 {
+			old := content[endOfType : endOfType+end]
+			return content[:endOfType] + newType + content[endOfType+len(old):]
+		}
+	}
+	return content
+}
+
 func joinShortNames(fqns []string) string {
 	names := make([]string, len(fqns))
 	for i, fqn := range fqns {

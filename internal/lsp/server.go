@@ -23,6 +23,7 @@ import (
 	"github.com/open-southeners/tusk-php/internal/models"
 	"github.com/open-southeners/tusk-php/internal/parser"
 	"github.com/open-southeners/tusk-php/internal/protocol"
+	"github.com/open-southeners/tusk-php/internal/resolve"
 	"github.com/open-southeners/tusk-php/internal/symbols"
 )
 
@@ -253,6 +254,9 @@ func (s *Server) handleInitialize(msg *jsonRPCMessage) {
 	s.completion.SetArrayResolver(arrayResolver)
 	s.hover = hover.NewProvider(s.index, s.container, s.framework)
 	s.hover.SetArrayResolver(arrayResolver)
+	s.hover.GenericTypeResolver = func(prefix, op, source string, pos protocol.Position, file *parser.FileNode) resolve.ResolvedType {
+		return s.completion.ResolveChainTypeTyped(source, prefix, op, pos, file)
+	}
 	s.diag = diagnostics.NewProvider(s.index, s.framework, s.rootPath, s.logger, s.cfg)
 	s.diag.TypeResolver = func(expr, source string, line int, file *parser.FileNode) string {
 		return s.completion.ResolveExpressionType(expr, source, protocol.Position{Line: line}, file)

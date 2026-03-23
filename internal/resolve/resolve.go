@@ -114,6 +114,32 @@ func (r *Resolver) FindMember(classFQN, memberName string) *symbols.Symbol {
 	return nil
 }
 
+// MemberTypeResolved returns the fully resolved type including generic params.
+// If typeContext is provided and the member's parent class has template mappings,
+// template parameters are substituted in the return type.
+func (r *Resolver) MemberTypeResolved(member *symbols.Symbol, file *parser.FileNode, typeContext []ResolvedType) ResolvedType {
+	// Try template resolution first if we have context
+	if len(typeContext) > 0 && member.Kind == symbols.KindMethod {
+		if rt := ResolveTemplateReturn(member.ParentFQN, member.Name, typeContext); !rt.IsEmpty() {
+			// Resolve class names in the result
+			rt.FQN = r.ResolveClassName(rt.FQN, file)
+			for i := range rt.Params {
+				if rt.Params[i].FQN != "" && rt.Params[i].FQN != "int" && rt.Params[i].FQN != "mixed" {
+					rt.Params[i].FQN = r.ResolveClassName(rt.Params[i].FQN, file)
+				}
+			}
+			return rt
+		}
+	}
+
+	// Fall back to standard resolution
+	fqn := r.MemberType(member, file)
+	if fqn == "" {
+		return ResolvedType{}
+	}
+	return ResolvedType{FQN: fqn}
+}
+
 // MemberType returns the resolved type of a member symbol (property type or method return type).
 // Falls back to @return/@var docblock annotations when no type hint is present.
 func (r *Resolver) MemberType(member *symbols.Symbol, file *parser.FileNode) string {

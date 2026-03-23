@@ -43,6 +43,18 @@ func (p *Provider) ResolveExpressionType(expr string, source string, pos protoco
 	return p.resolveAccessChain(dummyLine, wordStart, source, pos, file)
 }
 
+// ResolveExpressionTypeTyped resolves the type of an expression preserving
+// generic parameters (e.g., returns Collection<int, Category> instead of bare Collection).
+func (p *Provider) ResolveExpressionTypeTyped(expr string, source string, pos protocol.Position, file *parser.FileNode) resolve.ResolvedType {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return resolve.ResolvedType{}
+	}
+	dummyLine := expr + "->__dummy__"
+	wordStart := len(expr) + 2
+	return p.resolveAccessChainTyped(dummyLine, wordStart, source, pos, file)
+}
+
 // SetArrayResolver sets the framework array resolver for config/request/model key completion.
 func (p *Provider) SetArrayResolver(resolver *models.FrameworkArrayResolver) {
 	p.arrayResolver = resolver
@@ -165,7 +177,13 @@ func (p *Provider) GetCompletions(uri, source string, pos protocol.Position) []p
 }
 
 func (p *Provider) completeMemberAccess(uri, source string, pos protocol.Position, prefix string, file *parser.FileNode, parenAfterCursor bool) []protocol.CompletionItem {
-	typeName := p.resolveChainType(source, prefix, "->", pos, file)
+	// Use typed resolver first to get generic context
+	resolved := p.ResolveChainTypeTyped(source, prefix, "->", pos, file)
+	typeName := resolved.BaseFQN()
+	if typeName == "" {
+		// Fall back to standard resolver
+		typeName = p.resolveChainType(source, prefix, "->", pos, file)
+	}
 	if typeName == "" {
 		return nil
 	}
@@ -234,6 +252,16 @@ func (p *Provider) completeStaticAccess(source, prefix string, pos protocol.Posi
 	return items
 }
 
+// ResolveChainTypeTyped resolves the type of the expression before op (-> or ::)
+// preserving generic context. Used by hover and completion for rich type display.
+func (p *Provider) ResolveChainTypeTyped(source, prefix, op string, pos protocol.Position, file *parser.FileNode) resolve.ResolvedType {
+	idx := strings.LastIndex(prefix, op)
+	if idx < 0 {
+		return resolve.ResolvedType{}
+	}
+	return p.resolveAccessChainTyped(prefix, idx+len(op), source, pos, file)
+}
+
 // resolveChainType resolves the class FQN from the expression before op (-> or ::).
 // Handles: $var->, $this->, self::, static::, parent::, ClassName::,
 // $var::, new ClassName()->, (new ClassName)->, method chains, and
@@ -245,6 +273,170 @@ func (p *Provider) resolveChainType(source, prefix, op string, pos protocol.Posi
 	}
 	// wordStart is after the operator (where the member name would be)
 	return p.resolveAccessChain(prefix, idx+len(op), source, pos, file)
+}
+
+// resolveAccessChainTyped resolves the chain like resolveAccessChain but returns
+// a ResolvedType that preserves generic context (e.g., Builder<Category>).
+func (p *Provider) resolveAccessChainTyped(line string, wordStart int, source string, pos protocol.Position, file *parser.FileNode) resolve.ResolvedType {
+	return p.resolveChainWithContext(line, wordStart, source, pos, file, nil)
+}
+
+// resolveChainWithContext is the generic-aware chain resolver. It walks backward
+// through the chain and tracks generic type parameters at each step.
+func (p *Provider) resolveChainWithContext(line string, wordStart int, source string, pos protocol.Position, file *parser.FileNode, ctx []resolve.ResolvedType) resolve.ResolvedType {
+	i := wordStart
+
+	for i > 0 && (line[i-1] == ' ' || line[i-1] == '\t') {
+		i--
+	}
+	if i < 2 {
+		return resolve.ResolvedType{}
+	}
+
+	op := ""
+	if line[i-2] == '-' && line[i-1] == '>' {
+		op = "->"
+		i -= 2
+	} else if line[i-2] == ':' && line[i-1] == ':' {
+		op = "::"
+		i -= 2
+	} else {
+		return resolve.ResolvedType{}
+	}
+
+	for i > 0 && (line[i-1] == ' ' || line[i-1] == '\t') {
+		i--
+	}
+
+	parenEnd := 0
+	if i > 0 && line[i-1] == ')' {
+		parenEnd = i
+		depth := 1
+		i--
+		for i > 0 && depth > 0 {
+			i--
+			if line[i] == ')' {
+				depth++
+			} else if line[i] == '(' {
+				depth--
+			}
+		}
+
+		if op == "->" && p.container != nil {
+			callExpr := strings.TrimSpace(line[:parenEnd])
+			if concrete := p.resolveContainerCallType(callExpr, source, file); concrete != "" {
+				if concrete == "-" {
+					return resolve.ResolvedType{}
+				}
+				return resolve.ResolvedType{FQN: concrete}
+			}
+		}
+
+		if op == "->" {
+			callExpr := strings.TrimSpace(line[:parenEnd])
+			if newClass := extractNewClass(callExpr); newClass != "" {
+				fqn := p.resolveClassNameFromSource(newClass, source, file)
+				return resolve.ResolvedType{FQN: fqn}
+			}
+		}
+
+		for i > 0 && (line[i-1] == ' ' || line[i-1] == '\t') {
+			i--
+		}
+	}
+
+	end := i
+	for i > 0 && resolve.IsWordChar(line[i-1]) {
+		i--
+	}
+	if i > 0 && line[i-1] == '$' {
+		i--
+	}
+	if i >= end {
+		return resolve.ResolvedType{}
+	}
+	target := line[i:end]
+
+	// Resolve variables and keywords using standard resolution
+	switch target {
+	case "$this", "self", "static":
+		if file != nil {
+			return resolve.ResolvedType{FQN: resolve.FindEnclosingClass(file, pos)}
+		}
+		return resolve.ResolvedType{}
+	case "parent":
+		if file != nil {
+			classFQN := resolve.FindEnclosingClass(file, pos)
+			if classFQN != "" {
+				chain := p.index.GetInheritanceChain(classFQN)
+				if len(chain) > 0 {
+					return resolve.ResolvedType{FQN: chain[0]}
+				}
+			}
+		}
+		return resolve.ResolvedType{}
+	}
+
+	if strings.HasPrefix(target, "$") {
+		fqn := p.resolver.ResolveVariableType(target, resolve.SplitLines(source), pos, file)
+		return resolve.ResolvedType{FQN: fqn}
+	}
+
+	// Try as class name — this is the chain origin (e.g., Category::)
+	if fqn := p.resolveClassNameFromSource(target, source, file); fqn != "" {
+		if sym := p.index.Lookup(fqn); sym != nil {
+			switch sym.Kind {
+			case symbols.KindClass, symbols.KindInterface, symbols.KindEnum, symbols.KindTrait:
+				return resolve.ResolvedType{FQN: fqn}
+			}
+		} else if fqn != target && !strings.Contains(fqn, "::") {
+			return resolve.ResolvedType{FQN: fqn}
+		}
+	}
+
+	// Recursive chain resolution with context propagation
+	if file == nil {
+		return resolve.ResolvedType{}
+	}
+	ownerResolved := p.resolveChainWithContext(line, i, source, pos, file, nil)
+	if ownerResolved.IsEmpty() {
+		return resolve.ResolvedType{}
+	}
+
+	ownerFQN := ownerResolved.BaseFQN()
+	member := p.resolver.FindMember(ownerFQN, target)
+	if member == nil {
+		return resolve.ResolvedType{}
+	}
+
+	// Determine the generic context to pass to MemberTypeResolved.
+	// If the owner is an Eloquent model and the method returns Builder/Collection,
+	// inject the model FQN as the template parameter.
+	ownerContext := ownerResolved.Params
+	if len(ownerContext) == 0 && p.isEloquentModel(ownerFQN) {
+		// Model origin: the model itself is the template parameter for Builder
+		ownerContext = []resolve.ResolvedType{{FQN: ownerFQN}}
+	}
+
+	// If the owner is already a generic type (e.g., Builder<Category>), pass its params
+	if len(ownerResolved.Params) > 0 {
+		ownerContext = ownerResolved.Params
+	}
+
+	result := p.resolver.MemberTypeResolved(member, file, ownerContext)
+
+	// If the owner is an Eloquent model and the result is Builder or Collection
+	// without generic params, inject the model FQN as the template parameter.
+	if !result.IsGeneric() && p.isEloquentModel(ownerFQN) {
+		switch result.FQN {
+		case "Illuminate\\Database\\Eloquent\\Builder":
+			result.Params = []resolve.ResolvedType{{FQN: ownerFQN}}
+		case "Illuminate\\Database\\Eloquent\\Collection":
+			result.Params = []resolve.ResolvedType{{FQN: "int"}, {FQN: ownerFQN}}
+		}
+	}
+
+	return result
 }
 
 // resolveAccessChain walks left through a chain of -> and :: accesses in the
