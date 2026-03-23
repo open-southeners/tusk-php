@@ -1,10 +1,10 @@
 # Tusk PHP
 
-[![CI](https://github.com/open-southeners/php-lsp/actions/workflows/test.yml/badge.svg)](https://github.com/open-southeners/php-lsp/actions/workflows/test.yml)
-[![Release](https://github.com/open-southeners/php-lsp/actions/workflows/release.yml/badge.svg)](https://github.com/open-southeners/php-lsp/actions/workflows/release.yml)
+[![CI](https://github.com/open-southeners/tusk-php/actions/workflows/test.yml/badge.svg)](https://github.com/open-southeners/tusk-php/actions/workflows/test.yml)
+[![Release](https://github.com/open-southeners/tusk-php/actions/workflows/release.yml/badge.svg)](https://github.com/open-southeners/tusk-php/actions/workflows/release.yml)
 [![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/open-southeners.tusk-php?label=VS%20Code%20Marketplace)](https://marketplace.visualstudio.com/items?itemName=open-southeners.tusk-php)
 [![Open VSX](https://img.shields.io/open-vsx/v/open-southeners/tusk-php?label=Open%20VSX)](https://open-vsx.org/extension/open-southeners/tusk-php)
-[![GitHub Release](https://img.shields.io/github/v/release/open-southeners/php-lsp)](https://github.com/open-southeners/php-lsp/releases/latest)
+[![GitHub Release](https://img.shields.io/github/v/release/open-southeners/tusk-php)](https://github.com/open-southeners/tusk-php/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![PHP 8.0-8.5](https://img.shields.io/badge/PHP-8.0--8.5-777BB4?logo=php&logoColor=white)
 
@@ -38,8 +38,26 @@ Context-aware suggestions that understand your code. Method chains resolve throu
 
 ## Diagnostics
 
-- **Structural checks** — missing methods, undefined types, deprecated usage
-- **PHPStan integration** — runs on save, shows errors inline (requires PHPStan in your project)
+Built-in static analysis rules run on every change (fast checks) or on save (heavier checks). All rules are individually configurable.
+
+| Rule | Code | Severity | Runs on |
+|------|------|----------|---------|
+| Unused imports | `unused-import` | Hint | Change |
+| Unused private methods | `unused-private-method` | Info | Change |
+| Unused private properties | `unused-private-property` | Hint | Change |
+| Unreachable code | `unreachable-code` | Warning | Change |
+| Redundant union members | `redundant-union-member` | Info | Change |
+| Redundant nullsafe `?->` | `redundant-nullsafe` | Info | Save |
+| Unknown column in Builder | `unknown-column` | Warning | Save |
+| Unknown relation in Builder | `unknown-relation` | Warning | Save |
+| Deprecated PHP functions | `deprecated` | Warning | Change |
+| Abstract method in concrete class | `abstract-in-concrete` | Error | Change |
+
+Unused imports and unused private members are tagged as `Unnecessary` (editors grey them out). Deprecated functions are tagged as `Deprecated` (editors strike them through).
+
+External tool integrations:
+
+- **PHPStan** — runs on save, shows errors inline (requires PHPStan in your project)
 - **Laravel Pint** — formatting diagnostics on save (requires Pint in your project)
 
 ## Framework Intelligence
@@ -103,7 +121,7 @@ Zed-specific Tusk PHP settings can be passed through `lsp.tusk-php`:
   "lsp": {
     "tusk-php": {
       "binary": {
-        "path": "/absolute/path/to/php-lsp",
+        "path": "/absolute/path/to/tusk-php",
         "arguments": ["--transport", "stdio"]
       },
       "initialization_options": {
@@ -142,7 +160,7 @@ Install the binary (see below), then add to your config:
 ```lua
 require('lspconfig.configs').php_lsp = {
   default_config = {
-    cmd = { 'php-lsp', '--transport', 'stdio' },
+    cmd = { 'tusk-php', '--transport', 'stdio' },
     filetypes = { 'php' },
     root_dir = require('lspconfig.util').root_pattern('composer.json', '.git'),
   }
@@ -155,17 +173,17 @@ require('lspconfig').php_lsp.setup({})
 Any LSP client works. The server uses **stdio** with JSON-RPC 2.0:
 
 ```bash
-php-lsp --transport stdio
+tusk-php --transport stdio
 ```
 
 ### Binary Installation
 
-**Download** from [GitHub Releases](https://github.com/open-southeners/php-lsp/releases/latest) (Linux, macOS, Windows — amd64/arm64).
+**Download** from [GitHub Releases](https://github.com/open-southeners/tusk-php/releases/latest) (Linux, macOS, Windows — amd64/arm64).
 
 **Quick install** (Linux / macOS):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/open-southeners/php-lsp/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/open-southeners/tusk-php/main/scripts/install.sh | bash
 ```
 
 **From source** (requires Go 1.22+):
@@ -202,11 +220,21 @@ Create `.php-lsp.json` in your project root to override settings per project:
   "containerAware": true,
   "diagnosticsEnabled": true,
   "excludePaths": ["vendor", "node_modules", ".git"],
-  "maxIndexFiles": 10000
+  "maxIndexFiles": 10000,
+  "diagnosticRules": {
+    "unused-import": true,
+    "unused-private-method": true,
+    "unused-private-property": true,
+    "unreachable-code": true,
+    "redundant-nullsafe": true,
+    "redundant-union-member": true,
+    "unknown-column": true,
+    "unknown-relation": true
+  }
 }
 ```
 
-Framework is auto-detected from `artisan` (Laravel), `bin/console` (Symfony), or `composer.json`.
+All diagnostic rules are enabled by default. Set a rule to `false` to disable it. Framework is auto-detected from `artisan` (Laravel), `bin/console` (Symfony), or `composer.json`.
 
 ## Contributing
 
