@@ -46,6 +46,14 @@ type MemberChecker interface {
 	IsColumn(modelFQN string, name string) bool
 	IsDBColumn(modelFQN string, name string) bool
 	IsRelation(modelFQN string, name string) bool
+	// RelatedModelFQN returns the FQN of the model that a relation points to.
+	// Returns "" if the related model cannot be determined.
+	RelatedModelFQN(modelFQN string, relationName string) string
+}
+
+// Aggregate relation methods where the second arg is a column on the related model.
+var aggregateRelationMethods = map[string]bool{
+	"withSum": true, "withAvg": true, "withMin": true, "withMax": true,
 }
 
 // InvalidBuilderArgRule detects string arguments in Builder method calls that
@@ -85,9 +93,30 @@ var singleQuotedRe = regexp.MustCompile(`'([^']*)'`)
 // Matches individual double-quoted strings.
 var doubleQuotedRe = regexp.MustCompile(`"([^"]*)"`)
 
+// Matches two-arg pattern: ->withSum('relation', 'column') — captures method, first and second args.
+var twoArgSingleRe = regexp.MustCompile(`(?:->|::)(\w+)\s*\(\s*'([^']*)'\s*,\s*'([^']*)'`)
+var twoArgDoubleRe = regexp.MustCompile(`(?:->|::)(\w+)\s*\(\s*"([^"]*)"\s*,\s*"([^"]*)"`)
 
 func (r *InvalidBuilderArgRule) checkLine(line string, lineNum int, source string, file *parser.FileNode) []Finding {
 	var findings []Finding
+
+	// Check aggregate two-arg methods first: ->withSum('relation', 'column')
+	for _, re := range []*regexp.Regexp{twoArgSingleRe, twoArgDoubleRe} {
+		for _, match := range re.FindAllStringSubmatchIndex(line, -1) {
+			method := line[match[2]:match[3]]
+			if !aggregateRelationMethods[method] {
+				continue
+			}
+			firstArg := line[match[4]:match[5]]
+			secondArg := line[match[6]:match[7]]
+			secondStart := match[6]
+			secondEnd := match[7]
+
+			if f := r.validateAggregateSecondArg(method, firstArg, secondArg, lineNum, secondStart, secondEnd, line, source, file); f != nil {
+				findings = append(findings, *f)
+			}
+		}
+	}
 
 	// Check direct string arguments: ->where('column_name', or ->where("column_name",
 	for _, re := range []*regexp.Regexp{directArgSingleRe, directArgDoubleRe} {
@@ -124,6 +153,39 @@ func (r *InvalidBuilderArgRule) checkLine(line string, lineNum int, source strin
 	}
 
 	return findings
+}
+
+// validateAggregateSecondArg validates the second argument of aggregate methods
+// like withSum('relation', 'column') — the column must exist on the related model.
+func (r *InvalidBuilderArgRule) validateAggregateSecondArg(method, relationName, columnName string, lineNum, startCol, endCol int, line, source string, file *parser.FileNode) *Finding {
+	if columnName == "" || relationName == "" {
+		return nil
+	}
+
+	prefix := extractPrefixBefore(line, method)
+	modelFQN := r.ModelResolver(prefix, method, source, lineNum, file)
+	if modelFQN == "" {
+		return nil
+	}
+
+	// Resolve the related model from the relation
+	relatedFQN := r.Members.RelatedModelFQN(modelFQN, stripAlias(relationName))
+	if relatedFQN == "" {
+		return nil // can't determine related model — skip
+	}
+
+	if !r.Members.IsColumn(relatedFQN, columnName) {
+		return &Finding{
+			StartLine: lineNum,
+			StartCol:  startCol,
+			EndLine:   lineNum,
+			EndCol:    endCol,
+			Severity:  SeverityWarning,
+			Code:      "unknown-column",
+			Message:   fmt.Sprintf("Unknown column '%s' on related model '%s'", columnName, shortName(relatedFQN)),
+		}
+	}
+	return nil
 }
 
 func (r *InvalidBuilderArgRule) validateArg(method, argValue string, lineNum, startCol, endCol int, line, source string, file *parser.FileNode) *Finding {

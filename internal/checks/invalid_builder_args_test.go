@@ -9,9 +9,10 @@ import (
 
 // mockMemberChecker implements MemberChecker for testing.
 type mockMemberChecker struct {
-	columns   map[string]map[string]bool // modelFQN → set of column names
-	dbColumns map[string]map[string]bool
-	relations map[string]map[string]bool
+	columns      map[string]map[string]bool // modelFQN → set of column names
+	dbColumns    map[string]map[string]bool
+	relations    map[string]map[string]bool
+	relatedModel map[string]map[string]string // modelFQN → relationName → relatedModelFQN
 }
 
 func (m *mockMemberChecker) IsColumn(modelFQN, name string) bool {
@@ -35,6 +36,13 @@ func (m *mockMemberChecker) IsRelation(modelFQN, name string) bool {
 	return false
 }
 
+func (m *mockMemberChecker) RelatedModelFQN(modelFQN, relationName string) string {
+	if rels, ok := m.relatedModel[modelFQN]; ok {
+		return rels[relationName]
+	}
+	return ""
+}
+
 func setupBuilderArgRule() *InvalidBuilderArgRule {
 	members := &mockMemberChecker{
 		columns: map[string]map[string]bool{
@@ -48,6 +56,10 @@ func setupBuilderArgRule() *InvalidBuilderArgRule {
 		relations: map[string]map[string]bool{
 			"App\\Models\\Category": {"products": true},
 			"App\\Models\\Product":  {"category": true},
+		},
+		relatedModel: map[string]map[string]string{
+			"App\\Models\\Category": {"products": "App\\Models\\Product"},
+			"App\\Models\\Product":  {"category": "App\\Models\\Category"},
 		},
 	}
 
@@ -229,6 +241,39 @@ Category::with('nonexistent.tags');
 		file := parser.ParseFile(source)
 		findings := rule.Check(file, source, nil)
 		assertFindingCodes(t, findings, []string{"unknown-relation"})
+	})
+
+	t.Run("withSum second arg validates column on related model", func(t *testing.T) {
+		source := `<?php
+use App\Models\Category;
+Category::withSum('products', 'price');
+`
+		file := parser.ParseFile(source)
+		findings := rule.Check(file, source, nil)
+		assertNoFindings(t, findings)
+	})
+
+	t.Run("withSum second arg flags unknown column on related model", func(t *testing.T) {
+		source := `<?php
+use App\Models\Category;
+Category::withSum('products', 'nonexistent');
+`
+		file := parser.ParseFile(source)
+		findings := rule.Check(file, source, nil)
+		assertFindingCodes(t, findings, []string{"unknown-column"})
+		if !strings.Contains(findings[0].Message, "Product") {
+			t.Errorf("expected message to reference related model 'Product', got: %s", findings[0].Message)
+		}
+	})
+
+	t.Run("withAvg second arg validates column on related model", func(t *testing.T) {
+		source := `<?php
+use App\Models\Category;
+Category::withAvg('products', 'price');
+`
+		file := parser.ParseFile(source)
+		findings := rule.Check(file, source, nil)
+		assertNoFindings(t, findings)
 	})
 
 	t.Run("orderBy with dot notation skipped", func(t *testing.T) {

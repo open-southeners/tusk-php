@@ -64,6 +64,32 @@ func (c *indexMemberChecker) IsDBColumn(modelFQN, name string) bool {
 	return false
 }
 
+func (c *indexMemberChecker) RelatedModelFQN(modelFQN, relationName string) string {
+	// Look at the virtual property for this relation — for singular relations
+	// the Type is "?RelatedModelFQN", for plural it's "Collection" (lost).
+	for _, m := range c.index.GetClassMembers(modelFQN) {
+		if m.Kind != symbols.KindProperty {
+			continue
+		}
+		propName := strings.TrimPrefix(m.Name, "$")
+		if propName != relationName {
+			continue
+		}
+		if !m.IsVirtual || !strings.HasSuffix(m.DocComment, " relation") {
+			continue
+		}
+		typ := m.Type
+		// Singular relations: "?App\Models\Product" → "App\Models\Product"
+		if strings.HasPrefix(typ, "?") {
+			return typ[1:]
+		}
+		// Plural relations: Type is "Illuminate\Database\Eloquent\Collection"
+		// Can't determine related model from this — return ""
+		return ""
+	}
+	return ""
+}
+
 func (c *indexMemberChecker) IsRelation(modelFQN, name string) bool {
 	// Relation return type FQN fragments
 	relationTypes := map[string]bool{
