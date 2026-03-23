@@ -20,15 +20,22 @@ type Provider struct {
 	resolver      *resolve.Resolver
 	framework     string
 	arrayResolver *models.FrameworkArrayResolver
-	// GenericTypeResolver resolves a method member's return type with generic context.
+	// GenericExprResolver resolves the type of a full expression preserving generics.
+	// E.g., "Category::query()->get()" → Collection<int, Category>.
 	// Set by the LSP server after initialization by wiring to the completion provider.
-	GenericTypeResolver func(prefix, op, source string, pos protocol.Position, file *parser.FileNode) resolve.ResolvedType
+	GenericExprResolver func(expr, source string, pos protocol.Position, file *parser.FileNode) resolve.ResolvedType
 }
 
 func NewProvider(index *symbols.Index, ca *container.ContainerAnalyzer, framework string) *Provider {
 	p := &Provider{index: index, container: ca, resolver: resolve.NewResolver(index), framework: framework}
 	p.resolver.ChainResolver = p.resolveExpressionType
 	return p
+}
+
+// SetTypedChainResolver wires the generic-aware chain resolver for variable
+// type inference (so $categories = Category::get() shows Collection<int, Category>).
+func (p *Provider) SetTypedChainResolver(fn func(expr string, source string, pos protocol.Position, file *parser.FileNode) resolve.ResolvedType) {
+	p.resolver.TypedChainResolver = fn
 }
 
 // resolveExpressionType resolves the type of a chain expression like "Category::first()".
@@ -122,18 +129,16 @@ func (p *Provider) GetHover(uri, source string, pos protocol.Position) *protocol
 			content := p.formatHover(sym)
 
 			// Enhance with generic return type if available
-			if sym.Kind == symbols.KindMethod && p.GenericTypeResolver != nil {
-				// Build prefix up to the current word for typed resolution
+			if sym.Kind == symbols.KindMethod && p.GenericExprResolver != nil {
+				// Build the full expression up to and including the method call
 				hoverPrefix := chainLine[:chainWordStart]
-				for op, suffix := range map[string]string{"->": "->", "::": "::"} {
-					if strings.HasSuffix(strings.TrimSpace(hoverPrefix), op) {
-						rt := p.GenericTypeResolver(hoverPrefix+word+"()", suffix, source, pos, file)
-						if rt.IsGeneric() || (rt.Nullable && rt.FQN != "") {
-							content = replaceReturnType(content, rt.String())
-						}
-						break
+				trimmedPrefix := strings.TrimSpace(hoverPrefix)
+				if strings.HasSuffix(trimmedPrefix, "->") || strings.HasSuffix(trimmedPrefix, "::") {
+					expr := trimmedPrefix + word + "()"
+					rt := p.GenericExprResolver(expr, source, pos, file)
+					if rt.IsGeneric() || (rt.Nullable && rt.FQN != "") {
+						content = replaceReturnType(content, rt.String())
 					}
-					_ = suffix
 				}
 			}
 
@@ -320,8 +325,15 @@ func (p *Provider) hoverVariable(lines []string, pos protocol.Position, file *pa
 		return nil
 	}
 
-	// Try to resolve the variable type
-	typeName := p.resolver.ResolveVariableType(varName, lines, pos, file)
+	// Try typed resolution first (preserves generics: array<int, Category>)
+	resolvedType := p.resolver.ResolveVariableTypeTyped(varName, lines, pos, file)
+	typeName := resolvedType.BaseFQN()
+	typeDisplay := resolvedType.String()
+	if typeDisplay == "" {
+		// Fall back to non-typed resolution
+		typeName = p.resolver.ResolveVariableType(varName, lines, pos, file)
+		typeDisplay = typeName
+	}
 	if typeName != "" {
 		var sb strings.Builder
 		sb.WriteString(fmt.Sprintf("**%s**\n", varName))
@@ -332,7 +344,11 @@ func (p *Provider) hoverVariable(lines []string, pos protocol.Position, file *pa
 				}
 			}
 		}
-		sb.WriteString(fmt.Sprintf("\n```php\n%s %s\n```\n", shortName(typeName), varName))
+		displayShort := typeDisplay
+		if !resolvedType.IsGeneric() {
+			displayShort = shortName(typeName)
+		}
+		sb.WriteString(fmt.Sprintf("\n```php\n%s %s\n```\n", displayShort, varName))
 		p.appendContainerBinding(&sb, typeName)
 		return &protocol.Hover{Contents: protocol.MarkupContent{Kind: "markdown", Value: sb.String()}}
 	}

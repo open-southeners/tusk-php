@@ -251,7 +251,7 @@ func ParseDocBlock(raw string) *DocBlock {
 				doc.Properties = append(doc.Properties, parseDocProperty(value, false, true))
 			case "method":
 				doc.Methods = append(doc.Methods, parseDocMethod(value))
-			case "template":
+			case "template", "template-covariant", "template-contravariant":
 				doc.Templates = append(doc.Templates, parseDocTemplate(value))
 			}
 			continue

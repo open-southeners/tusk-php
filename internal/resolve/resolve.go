@@ -19,6 +19,10 @@ type Resolver struct {
 	// like "Category::first()" or "$foo->bar()->baz()". Set by the completion/hover
 	// provider that has access to the full chain resolution logic.
 	ChainResolver func(expr string, source string, pos protocol.Position, file *parser.FileNode) string
+	// TypedChainResolver is like ChainResolver but returns a ResolvedType
+	// preserving generic parameters. Used for variable type inference that
+	// needs to carry generic context through assignments.
+	TypedChainResolver func(expr string, source string, pos protocol.Position, file *parser.FileNode) ResolvedType
 }
 
 // NewResolver creates a resolver with the given symbol index.
@@ -115,13 +119,67 @@ func (r *Resolver) FindMember(classFQN, memberName string) *symbols.Symbol {
 }
 
 // MemberTypeResolved returns the fully resolved type including generic params.
-// If typeContext is provided and the member's parent class has template mappings,
-// template parameters are substituted in the return type.
-func (r *Resolver) MemberTypeResolved(member *symbols.Symbol, file *parser.FileNode, typeContext []ResolvedType) ResolvedType {
-	// Try template resolution first if we have context
+// callerFQN is the class the method was called on (for late static binding:
+// Category::query() where query is on Model — callerFQN is Category).
+// typeContext carries generic params from the caller (e.g., Builder<Category>).
+func (r *Resolver) MemberTypeResolved(member *symbols.Symbol, file *parser.FileNode, callerFQN string, typeContext []ResolvedType) ResolvedType {
+	// 1. Check if the member's return type has generic syntax or needs
+	//    late static binding resolution.
+	rawType := r.rawMemberReturnType(member)
+	if rawType != "" && rawType != "void" && rawType != "mixed" {
+		staticFQN := callerFQN
+		if staticFQN == "" {
+			staticFQN = member.ParentFQN
+		}
+
+		// Handle union types: pick the best part (prefer generic over bare).
+		// E.g., "Builder<static>|Category" → use "Builder<static>".
+		// Track if null was in the union for nullable marking.
+		resolvedRaw := strings.TrimPrefix(rawType, "\\")
+		nullable := strings.HasPrefix(resolvedRaw, "?")
+		if nullable {
+			resolvedRaw = resolvedRaw[1:]
+		}
+		if strings.Contains(resolvedRaw, "|") {
+			if hasNullInUnion(resolvedRaw) {
+				nullable = true
+			}
+			resolvedRaw = pickBestUnionPart(resolvedRaw)
+		}
+
+		if resolvedRaw == "self" || resolvedRaw == "static" || resolvedRaw == "$this" {
+			return ResolvedType{FQN: staticFQN, Params: typeContext, Nullable: nullable}
+		}
+
+		resolvedRaw = strings.TrimPrefix(resolvedRaw, "\\")
+
+		// Build template substitution map from the parent class's @template tags
+		// and the typeContext. E.g., Builder has @template TModel and typeContext
+		// is [Category], so TModel → Category.
+		templateSubst := buildTemplateSubst(r.Index, member.ParentFQN, typeContext)
+
+		if strings.Contains(resolvedRaw, "<") {
+			rt := ParseGenericType(resolvedRaw)
+			rt.FQN = resolveTypeParam(r, rt.FQN, staticFQN, templateSubst, file)
+			for i := range rt.Params {
+				rt.Params[i].FQN = resolveTypeParam(r, rt.Params[i].FQN, staticFQN, templateSubst, file)
+			}
+			rt.Nullable = rt.Nullable || nullable
+			return rt
+		}
+
+		// Even without <>, the return type might be a bare template param name
+		// (e.g., @return TModel|null → resolvedRaw is "TModel", nullable is true)
+		if sub, ok := templateSubst[resolvedRaw]; ok {
+			result := sub
+			result.Nullable = result.Nullable || nullable
+			return result
+		}
+	}
+
+	// 2. Try template resolution from the registry if we have context
 	if len(typeContext) > 0 && member.Kind == symbols.KindMethod {
 		if rt := ResolveTemplateReturn(member.ParentFQN, member.Name, typeContext); !rt.IsEmpty() {
-			// Resolve class names in the result
 			rt.FQN = r.ResolveClassName(rt.FQN, file)
 			for i := range rt.Params {
 				if rt.Params[i].FQN != "" && rt.Params[i].FQN != "int" && rt.Params[i].FQN != "mixed" {
@@ -132,12 +190,156 @@ func (r *Resolver) MemberTypeResolved(member *symbols.Symbol, file *parser.FileN
 		}
 	}
 
-	// Fall back to standard resolution
+	// 3. Fall back to standard resolution (strips generics)
 	fqn := r.MemberType(member, file)
 	if fqn == "" {
 		return ResolvedType{}
 	}
 	return ResolvedType{FQN: fqn}
+}
+
+// pickBestUnionPart selects the most informative part from a union type string.
+// Prefers parts with generic syntax (Builder<static>) over bare types (Category).
+// Skips null/void/mixed. For "Builder<static>|Category", returns "Builder<static>".
+func pickBestUnionPart(union string) string {
+	// Split union respecting < > nesting
+	var parts []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(union); i++ {
+		switch union[i] {
+		case '<':
+			depth++
+		case '>':
+			depth--
+		case '|':
+			if depth == 0 {
+				parts = append(parts, strings.TrimSpace(union[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	parts = append(parts, strings.TrimSpace(union[start:]))
+
+	// Prefer the first part with generics; otherwise first non-null part
+	var bestGeneric, bestPlain string
+	for _, p := range parts {
+		p = strings.TrimPrefix(p, "\\")
+		if p == "" || p == "null" || p == "void" || p == "mixed" {
+			continue
+		}
+		if strings.Contains(p, "<") && bestGeneric == "" {
+			bestGeneric = p
+		}
+		if bestPlain == "" {
+			bestPlain = p
+		}
+	}
+	if bestGeneric != "" {
+		return bestGeneric
+	}
+	return bestPlain
+}
+
+// hasNullInUnion checks if a union type string contains "null" as one of its parts.
+func hasNullInUnion(union string) bool {
+	depth := 0
+	start := 0
+	for i := 0; i < len(union); i++ {
+		switch union[i] {
+		case '<':
+			depth++
+		case '>':
+			depth--
+		case '|':
+			if depth == 0 {
+				if strings.TrimSpace(union[start:i]) == "null" {
+					return true
+				}
+				start = i + 1
+			}
+		}
+	}
+	return strings.TrimSpace(union[start:]) == "null"
+}
+
+// buildTemplateSubst builds a map from template parameter names to concrete types
+// using the class's @template declarations and the provided type context.
+// E.g., Builder has @template TModel, typeContext is [{FQN: "Category"}]
+// → returns {"TModel": {FQN: "Category"}}.
+func buildTemplateSubst(index *symbols.Index, classFQN string, typeContext []ResolvedType) map[string]ResolvedType {
+	if len(typeContext) == 0 {
+		return nil
+	}
+
+	// First check the class's own @template tags from Symbol.Templates
+	sym := index.Lookup(classFQN)
+	if sym != nil && len(sym.Templates) > 0 {
+		subst := make(map[string]ResolvedType)
+		for i, tmpl := range sym.Templates {
+			if i < len(typeContext) {
+				subst[tmpl.Name] = typeContext[i]
+			}
+		}
+		return subst
+	}
+
+	// Fall back to the hardcoded knownTemplates registry
+	if tmpl, ok := knownTemplates[classFQN]; ok {
+		subst := make(map[string]ResolvedType)
+		for i, paramName := range tmpl.Params {
+			if i < len(typeContext) {
+				subst[paramName] = typeContext[i]
+			}
+		}
+		return subst
+	}
+
+	return nil
+}
+
+// resolveTypeParam resolves a type name that could be static/self/$this,
+// a template parameter name (TModel), or a regular class name.
+func resolveTypeParam(r *Resolver, name, staticFQN string, templateSubst map[string]ResolvedType, file *parser.FileNode) string {
+	switch name {
+	case "static", "self", "$this":
+		return staticFQN
+	}
+	if sub, ok := templateSubst[name]; ok {
+		return sub.FQN
+	}
+	return r.ResolveClassName(name, file)
+}
+
+// resolveStaticOrClassName resolves "static"/"self"/"$this" to the caller FQN,
+// or resolves a regular class name through use statements.
+func resolveStaticOrClassName(r *Resolver, name, staticFQN string, file *parser.FileNode) string {
+	switch name {
+	case "static", "self", "$this":
+		return staticFQN
+	default:
+		return r.ResolveClassName(name, file)
+	}
+}
+
+// rawMemberReturnType extracts the raw return type string from a member
+// without any resolution or stripping. Used by MemberTypeResolved to check
+// for generic syntax before falling back to MemberType.
+func (r *Resolver) rawMemberReturnType(member *symbols.Symbol) string {
+	switch member.Kind {
+	case symbols.KindMethod:
+		if member.ReturnType != "" {
+			return member.ReturnType
+		}
+		if member.DocComment != "" {
+			if doc := parser.ParseDocBlock(member.DocComment); doc != nil && doc.Return.Type != "" {
+				return doc.Return.Type
+			}
+		}
+	case symbols.KindProperty:
+		return member.Type
+	}
+	return ""
 }
 
 // MemberType returns the resolved type of a member symbol (property type or method return type).
@@ -187,6 +389,93 @@ func (r *Resolver) MemberType(member *symbols.Symbol, file *parser.FileNode) str
 		}
 	}
 	return r.ResolveClassName(typeName, file)
+}
+
+// ResolveVariableTypeTyped infers the type of a variable preserving generic context.
+// Used by the typed chain resolver so that $categories = Category::query()->get()
+// results in $categories having type Collection<int, Category>.
+func (r *Resolver) ResolveVariableTypeTyped(varName string, lines []string, pos protocol.Position, file *parser.FileNode) ResolvedType {
+	if file == nil {
+		return ResolvedType{}
+	}
+
+	// Special case: $this
+	if varName == "$this" {
+		return ResolvedType{FQN: FindEnclosingClass(file, pos)}
+	}
+
+	// Check parameter types
+	enclosingMethod := FindEnclosingMethod(file, pos)
+	if enclosingMethod != nil {
+		for _, param := range enclosingMethod.Params {
+			if param.Name == varName {
+				return ResolvedType{FQN: r.ResolveClassName(param.Type.Name, file)}
+			}
+		}
+	}
+
+	bare := strings.TrimPrefix(varName, "$")
+	varPrefix := "$" + bare
+
+	// Look for assignments with chain expressions
+	for i := pos.Line; i >= 0 && i >= pos.Line-200; i-- {
+		if i >= len(lines) {
+			continue
+		}
+		trimmed := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(trimmed, varPrefix) {
+			continue
+		}
+		rest := strings.TrimSpace(trimmed[len(varPrefix):])
+		if !strings.HasPrefix(rest, "=") {
+			continue
+		}
+		rhs := strings.TrimSpace(rest[1:])
+		rhs = strings.TrimSuffix(rhs, ";")
+		rhs = strings.TrimSpace(rhs)
+
+		// $var = new ClassName(...)
+		if strings.HasPrefix(rhs, "new ") {
+			className := strings.TrimSpace(rhs[4:])
+			if idx := strings.IndexByte(className, '('); idx >= 0 {
+				className = className[:idx]
+			}
+			className = strings.TrimSpace(className)
+			if className != "" {
+				return ResolvedType{FQN: r.ResolveClassName(className, file)}
+			}
+		}
+
+		// $var = $other[index] — array element access
+		if bracketIdx := strings.Index(rhs, "["); bracketIdx > 0 && strings.HasPrefix(rhs, "$") {
+			arrayVar := strings.TrimSpace(rhs[:bracketIdx])
+			arrayType := r.ResolveVariableTypeTyped(arrayVar, lines, pos, file)
+			if arrayType.FQN == "array" && len(arrayType.Params) >= 2 {
+				// array<TKey, TValue>[index] → TValue
+				return arrayType.Params[1]
+			}
+		}
+
+		// Use typed chain resolver if available
+		if r.TypedChainResolver != nil && (strings.Contains(rhs, "->") || strings.Contains(rhs, "::")) {
+			if rt := r.TypedChainResolver(rhs, strings.Join(lines, "\n"), pos, file); !rt.IsEmpty() {
+				return rt
+			}
+		}
+
+		// Fall back to standard chain resolver
+		if r.ChainResolver != nil && (strings.Contains(rhs, "->") || strings.Contains(rhs, "::")) {
+			if t := r.ChainResolver(rhs, strings.Join(lines, "\n"), pos, file); t != "" {
+				return ResolvedType{FQN: t}
+			}
+		}
+
+		break
+	}
+
+	// Fall back to standard resolution
+	fqn := r.ResolveVariableType(varName, lines, pos, file)
+	return ResolvedType{FQN: fqn}
 }
 
 // ResolveVariableType infers the type of a variable from context:

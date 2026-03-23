@@ -126,6 +126,11 @@ func setupRealisticEloquentTest(t *testing.T) *Provider {
 namespace Illuminate\Database\Eloquent;
 abstract class Model {
     /**
+     * @return \Illuminate\Database\Eloquent\Builder<static>
+     */
+    public static function query() {}
+
+    /**
      * @return bool
      */
     public function save() {}

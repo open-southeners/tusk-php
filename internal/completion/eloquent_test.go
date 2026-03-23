@@ -21,6 +21,8 @@ func setupEloquentCompletionTest(t *testing.T) (*Provider, string) {
 	idx.IndexFile("file:///vendor/Model.php", `<?php
 namespace Illuminate\Database\Eloquent;
 abstract class Model {
+    /** @return \Illuminate\Database\Eloquent\Builder<static> */
+    public static function query() {}
     public function save(): bool { return true; }
     public function delete(): bool { return true; }
     public function toArray(): array { return []; }

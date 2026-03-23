@@ -211,13 +211,21 @@ func shortName(fqn string) string {
 	return fqn
 }
 
-// replaceReturnType replaces the return type in a hover markdown code block
-// with a more specific generic type. E.g., replaces ": Collection" with ": Collection<int, Category>".
+// replaceReturnType replaces the return type in a hover markdown with a more
+// specific generic type. Handles both inline ): Type and **Returns** `Type`.
 func replaceReturnType(content, newType string) string {
-	// Look for ): Type pattern in the code block
+	// Try **Returns** `Type` pattern (docblock-derived return types)
+	marker := "**Returns** `"
+	if idx := strings.Index(content, marker); idx >= 0 {
+		start := idx + len(marker)
+		end := strings.Index(content[start:], "`")
+		if end >= 0 {
+			return content[:start] + newType + content[start+end:]
+		}
+	}
+	// Try ): Type pattern (inline PHP return type)
 	if idx := strings.Index(content, "): "); idx >= 0 {
 		endOfType := idx + 3
-		// Find the end of the type (next newline or end of code block)
 		end := strings.IndexAny(content[endOfType:], "\n`")
 		if end >= 0 {
 			old := content[endOfType : endOfType+end]

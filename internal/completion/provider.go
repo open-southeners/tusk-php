@@ -24,6 +24,8 @@ func NewProvider(index *symbols.Index, ca *container.ContainerAnalyzer, framewor
 	p := &Provider{index: index, container: ca, resolver: resolve.NewResolver(index), framework: framework}
 	// Wire up chain resolution so ResolveVariableType can handle $var = Class::method()->chain()
 	p.resolver.ChainResolver = p.ResolveExpressionType
+	// Wire up typed chain resolution for generic-aware variable type inference
+	p.resolver.TypedChainResolver = p.ResolveExpressionTypeTyped
 	return p
 }
 
@@ -378,8 +380,7 @@ func (p *Provider) resolveChainWithContext(line string, wordStart int, source st
 	}
 
 	if strings.HasPrefix(target, "$") {
-		fqn := p.resolver.ResolveVariableType(target, resolve.SplitLines(source), pos, file)
-		return resolve.ResolvedType{FQN: fqn}
+		return p.resolver.ResolveVariableTypeTyped(target, resolve.SplitLines(source), pos, file)
 	}
 
 	// Try as class name — this is the chain origin (e.g., Category::)
@@ -409,34 +410,12 @@ func (p *Provider) resolveChainWithContext(line string, wordStart int, source st
 		return resolve.ResolvedType{}
 	}
 
-	// Determine the generic context to pass to MemberTypeResolved.
-	// If the owner is an Eloquent model and the method returns Builder/Collection,
-	// inject the model FQN as the template parameter.
+	// Pass the owner's generic params as context for template resolution.
+	// E.g., Builder<Category> passes [Category] so Builder::get() → Collection<int, Category>.
+	// callerFQN is the owner class for late static binding (Category::query() → static=Category).
 	ownerContext := ownerResolved.Params
-	if len(ownerContext) == 0 && p.isEloquentModel(ownerFQN) {
-		// Model origin: the model itself is the template parameter for Builder
-		ownerContext = []resolve.ResolvedType{{FQN: ownerFQN}}
-	}
 
-	// If the owner is already a generic type (e.g., Builder<Category>), pass its params
-	if len(ownerResolved.Params) > 0 {
-		ownerContext = ownerResolved.Params
-	}
-
-	result := p.resolver.MemberTypeResolved(member, file, ownerContext)
-
-	// If the owner is an Eloquent model and the result is Builder or Collection
-	// without generic params, inject the model FQN as the template parameter.
-	if !result.IsGeneric() && p.isEloquentModel(ownerFQN) {
-		switch result.FQN {
-		case "Illuminate\\Database\\Eloquent\\Builder":
-			result.Params = []resolve.ResolvedType{{FQN: ownerFQN}}
-		case "Illuminate\\Database\\Eloquent\\Collection":
-			result.Params = []resolve.ResolvedType{{FQN: "int"}, {FQN: ownerFQN}}
-		}
-	}
-
-	return result
+	return p.resolver.MemberTypeResolved(member, file, ownerFQN, ownerContext)
 }
 
 // resolveAccessChain walks left through a chain of -> and :: accesses in the
