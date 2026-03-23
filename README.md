@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/open-southeners/tusk-php/actions/workflows/test.yml/badge.svg)](https://github.com/open-southeners/tusk-php/actions/workflows/test.yml)
 [![Release](https://github.com/open-southeners/tusk-php/actions/workflows/release.yml/badge.svg)](https://github.com/open-southeners/tusk-php/actions/workflows/release.yml)
+[![codecov](https://codecov.io/gh/open-southeners/tusk-php/graph/badge.svg?token=BgBvrfITKq)](https://codecov.io/gh/open-southeners/tusk-php)
 [![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/open-southeners.tusk-php?label=VS%20Code%20Marketplace)](https://marketplace.visualstudio.com/items?itemName=open-southeners.tusk-php)
 [![Open VSX](https://img.shields.io/open-vsx/v/open-southeners/tusk-php?label=Open%20VSX)](https://open-vsx.org/extension/open-southeners/tusk-php)
 [![GitHub Release](https://img.shields.io/github/v/release/open-southeners/tusk-php)](https://github.com/open-southeners/tusk-php/releases/latest)
