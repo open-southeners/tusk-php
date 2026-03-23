@@ -10,7 +10,7 @@ if command -v go &> /dev/null; then
     echo "Building from source..."
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     cd "$(dirname "$SCRIPT_DIR")"
-    go build -ldflags="-s -w -X main.version=${VERSION}" -trimpath -o "${INSTALL_DIR}/php-lsp" ./cmd/php-lsp/
+    go build -ldflags="-s -w -X main.version=${VERSION}" -trimpath -o "${INSTALL_DIR}/php-lsp" ./cmd/tusk-php/
 else
     echo "Downloading binary..."
     curl -fsSL -o "${INSTALL_DIR}/php-lsp" "https://github.com/open-southeners/tusk-php/releases/download/v${VERSION}/tusk-php-${OS}-${ARCH}"

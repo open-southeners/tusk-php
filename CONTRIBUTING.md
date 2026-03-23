@@ -33,7 +33,7 @@ make dev
 ### Project Structure
 
 ```
-cmd/php-lsp/       Entry point
+cmd/tusk-php/      Entry point
 internal/          All server packages (parser, symbols, hover, completion, etc.)
 editors/vscode/    VS Code extension (TypeScript)
 editors/zed/       Zed extension (Rust/WASM)

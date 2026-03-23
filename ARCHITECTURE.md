@@ -6,7 +6,7 @@ A Go-based Language Server Protocol (LSP) implementation for PHP 8.0–8.5, with
 
 ```
 php-lsp/
-├── cmd/php-lsp/main.go              # Entry point: CLI flags, stdio, server startup
+├── cmd/tusk-php/main.go             # Entry point: CLI flags, stdio, server startup
 ├── internal/
 │   ├── parser/                      # PHP tokenizer + lightweight AST
 │   ├── symbols/                     # Central symbol table (Index)
@@ -29,7 +29,7 @@ php-lsp/
 
 ## Entry Point
 
-`cmd/php-lsp/main.go` parses CLI flags (`--version`, `--log`, `--stdio`), creates a `lsp.Server` with stdin/stdout, and calls `server.Run()` which enters the JSON-RPC message loop.
+`cmd/tusk-php/main.go` parses CLI flags (`--version`, `--log`, `--stdio`), creates a `lsp.Server` with stdin/stdout, and calls `server.Run()` which enters the JSON-RPC message loop.
 
 ## JSON-RPC Protocol
 

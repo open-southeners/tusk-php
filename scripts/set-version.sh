@@ -71,7 +71,7 @@ echo "Setting version to $VERSION"
 replace_in_file "Makefile" 's/^VERSION \?= .+$/VERSION ?= $ENV{VERSION}/m'
 replace_in_file "scripts/build.sh" 's/^VERSION="\$\{VERSION:-[^}]+\}"$/VERSION="\${VERSION:-$ENV{VERSION}}"/m'
 replace_in_file "scripts/install.sh" 's/^VERSION="\$\{VERSION:-[^}]+\}"$/VERSION="\${VERSION:-$ENV{VERSION}}"/m'
-replace_in_file "cmd/php-lsp/main.go" 's/^(\s*version\s*=\s*")[^"]+(")/$1$ENV{VERSION}$2/m'
+replace_in_file "cmd/tusk-php/main.go" 's/^(\s*version\s*=\s*")[^"]+(")/$1$ENV{VERSION}$2/m'
 replace_in_file "internal/lsp/server.go" 's/^(const ServerVersion = ")[^"]+(")/$1$ENV{VERSION}$2/m'
 replace_in_file "editors/vscode/package.json" 's/^(\s*"version": ")[^"]+(")/$1$ENV{VERSION}$2/m'
 replace_in_file "editors/zed/Cargo.toml" 's/(\[package\]\n(?:[^\n]*\n)*?version = ")[^"]+(")/$1$ENV{VERSION}$2/s'
@@ -94,7 +94,7 @@ printf '  %s\n' \
     "Makefile" \
     "scripts/build.sh" \
     "scripts/install.sh" \
-    "cmd/php-lsp/main.go" \
+    "cmd/tusk-php/main.go" \
     "internal/lsp/server.go" \
     "editors/vscode/package.json" \
     "editors/zed/Cargo.toml" \

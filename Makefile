@@ -10,13 +10,13 @@ ZED_PACKAGE_DIR := $(DIST_DIR)/tusk-php-zed-$(VERSION)
 ZED_PACKAGE_ZIP := $(DIST_DIR)/tusk-php-zed-$(VERSION).zip
 
 build:
-	go build $(LDFLAGS) -trimpath -o build/$(BINARY) ./cmd/php-lsp/
+	go build $(LDFLAGS) -trimpath -o build/$(BINARY) ./cmd/tusk-php/
 
 install: build
 	cp build/$(BINARY) $(HOME)/.local/bin/$(BINARY)
 
 dev:
-	go run ./cmd/php-lsp/ --log /tmp/php-lsp.log
+	go run ./cmd/tusk-php/ --log /tmp/php-lsp.log
 
 test:
 	go test -v -race ./...
