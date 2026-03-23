@@ -345,7 +345,7 @@ func (p *Provider) hoverVariable(lines []string, pos protocol.Position, file *pa
 			}
 		}
 		displayShort := typeDisplay
-		if !resolvedType.IsGeneric() {
+		if !resolvedType.IsGeneric() && resolvedType.Shape == "" {
 			displayShort = shortName(typeName)
 		}
 		sb.WriteString(fmt.Sprintf("\n```php\n%s %s\n```\n", displayShort, varName))

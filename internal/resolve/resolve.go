@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/open-southeners/tusk-php/internal/parser"
+	"github.com/open-southeners/tusk-php/internal/phparray"
 	"github.com/open-southeners/tusk-php/internal/protocol"
 	"github.com/open-southeners/tusk-php/internal/symbols"
 )
@@ -141,10 +142,10 @@ func (r *Resolver) MemberTypeResolved(member *symbols.Symbol, file *parser.FileN
 			resolvedRaw = resolvedRaw[1:]
 		}
 		if strings.Contains(resolvedRaw, "|") {
-			if hasNullInUnion(resolvedRaw) {
+			if HasNullInUnion(resolvedRaw) {
 				nullable = true
 			}
-			resolvedRaw = pickBestUnionPart(resolvedRaw)
+			resolvedRaw = PickBestUnionPart(resolvedRaw)
 		}
 
 		if resolvedRaw == "self" || resolvedRaw == "static" || resolvedRaw == "$this" {
@@ -201,7 +202,7 @@ func (r *Resolver) MemberTypeResolved(member *symbols.Symbol, file *parser.FileN
 // pickBestUnionPart selects the most informative part from a union type string.
 // Prefers parts with generic syntax (Builder<static>) over bare types (Category).
 // Skips null/void/mixed. For "Builder<static>|Category", returns "Builder<static>".
-func pickBestUnionPart(union string) string {
+func PickBestUnionPart(union string) string {
 	// Split union respecting < > nesting
 	var parts []string
 	depth := 0
@@ -242,7 +243,7 @@ func pickBestUnionPart(union string) string {
 }
 
 // hasNullInUnion checks if a union type string contains "null" as one of its parts.
-func hasNullInUnion(union string) bool {
+func HasNullInUnion(union string) bool {
 	depth := 0
 	start := 0
 	for i := 0; i < len(union); i++ {
@@ -320,6 +321,93 @@ func resolveStaticOrClassName(r *Resolver, name, staticFQN string, file *parser.
 	default:
 		return r.ResolveClassName(name, file)
 	}
+}
+
+// inferArgType resolves the type of a constructor/method argument expression.
+// It handles variables, array literals, and chain expressions.
+func (r *Resolver) inferArgType(argStr string, lines []string, pos protocol.Position, file *parser.FileNode, assignLine int) ResolvedType {
+	argStr = strings.TrimSpace(argStr)
+	// First arg only (split by comma, take first)
+	if commaIdx := IndexOutsideBrackets(argStr, ','); commaIdx >= 0 {
+		argStr = strings.TrimSpace(argStr[:commaIdx])
+	}
+	if argStr == "" {
+		return ResolvedType{}
+	}
+
+	// Array literal
+	if strings.HasPrefix(argStr, "[") {
+		return InferArrayLiteralType(argStr)
+	}
+
+	// Variable reference
+	if strings.HasPrefix(argStr, "$") {
+		return r.ResolveVariableTypeTyped(argStr, lines, pos, file)
+	}
+
+	return ResolvedType{}
+}
+
+// inferConstructorGenerics binds a class's @template params from the constructor
+// argument type. E.g., new Collection(array<int, Shape>) → Collection<int, Shape>.
+func (r *Resolver) inferConstructorGenerics(classFQN string, argType ResolvedType) ResolvedType {
+	sym := r.Index.Lookup(classFQN)
+	if sym == nil || len(sym.Templates) == 0 {
+		return ResolvedType{}
+	}
+
+	// The argument type is array<K, V> or array{shape} — extract K and V
+	if argType.FQN != "array" {
+		return ResolvedType{}
+	}
+
+	var params []ResolvedType
+	if len(argType.Params) >= 2 {
+		// array<K, V> → bind templates in order
+		for i := range sym.Templates {
+			if i < len(argType.Params) {
+				params = append(params, argType.Params[i])
+			}
+		}
+	} else if argType.Shape != "" {
+		// array{shape} with no generic params — treat as array<string, mixed>
+		// This case is for associative arrays passed directly
+		params = append(params, ResolvedType{FQN: "string"})
+		params = append(params, ResolvedType{FQN: "mixed"})
+	}
+
+	if len(params) == 0 {
+		return ResolvedType{}
+	}
+	return ResolvedType{FQN: classFQN, Params: params}
+}
+
+// indexOutsideBrackets finds the first occurrence of ch outside nested brackets/parens.
+func IndexOutsideBrackets(s string, ch byte) int {
+	depth := 0
+	inString := byte(0)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString != 0 {
+			if c == inString && (i == 0 || s[i-1] != '\\') {
+				inString = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			inString = c
+		case '(', '[':
+			depth++
+		case ')', ']':
+			depth--
+		default:
+			if c == ch && depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // rawMemberReturnType extracts the raw return type string from a member
@@ -434,15 +522,45 @@ func (r *Resolver) ResolveVariableTypeTyped(varName string, lines []string, pos 
 		rhs = strings.TrimSuffix(rhs, ";")
 		rhs = strings.TrimSpace(rhs)
 
-		// $var = new ClassName(...)
+		// $var = new ClassName(...) — with constructor generic inference
 		if strings.HasPrefix(rhs, "new ") {
 			className := strings.TrimSpace(rhs[4:])
+			argStr := ""
 			if idx := strings.IndexByte(className, '('); idx >= 0 {
+				// Extract the constructor argument(s) between ( and )
+				rest := className[idx+1:]
 				className = className[:idx]
+				if closeIdx := strings.LastIndexByte(rest, ')'); closeIdx >= 0 {
+					argStr = strings.TrimSpace(rest[:closeIdx])
+				}
 			}
 			className = strings.TrimSpace(className)
-			if className != "" {
-				return ResolvedType{FQN: r.ResolveClassName(className, file)}
+			if className == "" {
+				break
+			}
+			classFQN := r.ResolveClassName(className, file)
+
+			// Try to infer generic params from constructor argument
+			if argStr != "" {
+				argRT := r.inferArgType(argStr, lines, pos, file, i)
+				if !argRT.IsEmpty() && (argRT.IsGeneric() || argRT.Shape != "") {
+					if rt := r.inferConstructorGenerics(classFQN, argRT); !rt.IsEmpty() {
+						return rt
+					}
+				}
+			}
+			return ResolvedType{FQN: classFQN}
+		}
+
+		// $var = [...] — array literal with shape inference
+		if strings.HasPrefix(rhs, "[") {
+			// Collect the full multi-line array literal
+			arrayLiteral := phparray.CollectArrayLiteral(lines, i)
+			if arrayLiteral != "" {
+				rt := InferArrayLiteralType(arrayLiteral)
+				if !rt.IsEmpty() {
+					return rt
+				}
 			}
 		}
 

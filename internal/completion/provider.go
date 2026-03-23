@@ -311,6 +311,7 @@ func (p *Provider) resolveChainWithContext(line string, wordStart int, source st
 	}
 
 	parenEnd := 0
+	callArgStr := "" // captures the text inside (...) for method-level template inference
 	if i > 0 && line[i-1] == ')' {
 		parenEnd = i
 		depth := 1
@@ -322,6 +323,10 @@ func (p *Provider) resolveChainWithContext(line string, wordStart int, source st
 			} else if line[i] == '(' {
 				depth--
 			}
+		}
+		// Capture argument content: text between ( and )
+		if i >= 0 && i+1 < parenEnd-1 {
+			callArgStr = strings.TrimSpace(line[i+1 : parenEnd-1])
 		}
 
 		if op == "->" && p.container != nil {
@@ -415,7 +420,145 @@ func (p *Provider) resolveChainWithContext(line string, wordStart int, source st
 	// callerFQN is the owner class for late static binding (Category::query() → static=Category).
 	ownerContext := ownerResolved.Params
 
-	return p.resolver.MemberTypeResolved(member, file, ownerFQN, ownerContext)
+	result := p.resolver.MemberTypeResolved(member, file, ownerFQN, ownerContext)
+
+	// If the result still has unresolved template params (e.g., TValue from a
+	// method-level @template), try to bind them from the call arguments.
+	if !result.IsEmpty() && callArgStr != "" && hasUnresolvedTemplateParam(result) {
+		if bound := p.resolveMethodTemplateFromArgs(member, callArgStr, source, pos, file, ownerFQN); !bound.IsEmpty() {
+			return bound
+		}
+	}
+
+	return result
+}
+
+// hasUnresolvedTemplateParam checks if a ResolvedType still contains
+// template parameter names (single uppercase-starting words like TValue, TModel).
+func hasUnresolvedTemplateParam(rt resolve.ResolvedType) bool {
+	if isTemplateParamName(rt.FQN) {
+		return true
+	}
+	for _, p := range rt.Params {
+		if isTemplateParamName(p.FQN) {
+			return true
+		}
+	}
+	return false
+}
+
+func isTemplateParamName(name string) bool {
+	if len(name) < 2 || name[0] != 'T' {
+		return false
+	}
+	// Template params are like TValue, TModel, TKey — start with T + uppercase
+	return name[1] >= 'A' && name[1] <= 'Z' && !strings.Contains(name, "\\")
+}
+
+// resolveMethodTemplateFromArgs binds method-level @template params by
+// matching the first argument's resolved type against the first @param type.
+// E.g., Arr::first($employees) where @param iterable<TKey, TValue> $array
+// and $employees is array<int, Shape> → binds TKey=int, TValue=Shape.
+func (p *Provider) resolveMethodTemplateFromArgs(member *symbols.Symbol, argStr, source string, pos protocol.Position, file *parser.FileNode, callerFQN string) resolve.ResolvedType {
+	if member.DocComment == "" {
+		return resolve.ResolvedType{}
+	}
+	doc := parser.ParseDocBlock(member.DocComment)
+	if doc == nil || len(doc.Templates) == 0 {
+		return resolve.ResolvedType{}
+	}
+
+	// Resolve the first argument's type
+	argStr = strings.TrimSpace(argStr)
+	// Take first arg only
+	if idx := resolve.IndexOutsideBrackets(argStr, ','); idx >= 0 {
+		argStr = strings.TrimSpace(argStr[:idx])
+	}
+	if argStr == "" {
+		return resolve.ResolvedType{}
+	}
+
+	var argType resolve.ResolvedType
+	if strings.HasPrefix(argStr, "[") {
+		argType = resolve.InferArrayLiteralType(argStr)
+	} else if strings.HasPrefix(argStr, "$") {
+		argType = p.resolver.ResolveVariableTypeTyped(argStr, resolve.SplitLines(source), pos, file)
+	}
+	if argType.IsEmpty() || (!argType.IsGeneric() && argType.Shape == "") {
+		return resolve.ResolvedType{}
+	}
+
+	// Build substitution map from method @template + first @param
+	subst := make(map[string]resolve.ResolvedType)
+	if len(doc.Params) > 0 && len(argType.Params) >= 2 {
+		paramType := doc.Params[0].Type
+		// Parse iterable<TKey, TValue> or array<TKey, TValue> from the param type
+		paramRT := resolve.ParseGenericType(paramType)
+		for i, pp := range paramRT.Params {
+			if i < len(argType.Params) {
+				// Map template name → concrete type
+				for _, tmpl := range doc.Templates {
+					if tmpl.Name == pp.FQN {
+						subst[tmpl.Name] = argType.Params[i]
+					}
+				}
+			}
+		}
+	}
+
+	if len(subst) == 0 {
+		return resolve.ResolvedType{}
+	}
+
+	// Get the raw return type and substitute
+	rawRet := ""
+	if member.ReturnType != "" {
+		rawRet = member.ReturnType
+	} else if doc.Return.Type != "" {
+		rawRet = doc.Return.Type
+	}
+	if rawRet == "" {
+		return resolve.ResolvedType{}
+	}
+
+	// Handle union return types: TValue|TFirstDefault → pick parts that resolve
+	rawRet = strings.TrimPrefix(rawRet, "\\")
+	nullable := false
+	if strings.Contains(rawRet, "|") {
+		if resolve.HasNullInUnion(rawRet) {
+			nullable = true
+		}
+		rawRet = resolve.PickBestUnionPart(rawRet)
+	}
+
+	// Substitute template params
+	if sub, ok := subst[rawRet]; ok {
+		sub.Nullable = sub.Nullable || nullable
+		return sub
+	}
+
+	// Parse generics and substitute
+	rt := resolve.ParseGenericType(rawRet)
+	if sub, ok := subst[rt.FQN]; ok {
+		rt.FQN = sub.FQN
+		rt.Shape = sub.Shape
+	}
+	for i, pp := range rt.Params {
+		if sub, ok := subst[pp.FQN]; ok {
+			rt.Params[i] = sub
+		}
+	}
+
+	staticFQN := callerFQN
+	if staticFQN == "" {
+		staticFQN = member.ParentFQN
+	}
+	switch rt.FQN {
+	case "static", "self", "$this":
+		rt.FQN = staticFQN
+	}
+	rt.Nullable = rt.Nullable || nullable
+	return rt
 }
 
 // resolveAccessChain walks left through a chain of -> and :: accesses in the
