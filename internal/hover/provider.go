@@ -110,8 +110,11 @@ func (p *Provider) GetHover(uri, source string, pos protocol.Position) *protocol
 		wordStart--
 	}
 
+	// Join multi-line chains so resolveAccessChain can walk the full expression.
+	chainLine, chainWordStart := resolve.JoinChainLines(lines, pos.Line, wordStart)
+
 	// Check for -> or :: access context
-	if classFQN := p.resolveAccessChain(line, wordStart, lines, pos, file); classFQN != "" {
+	if classFQN := p.resolveAccessChain(chainLine, chainWordStart, lines, pos, file); classFQN != "" {
 		if sym := p.resolver.FindMember(classFQN, word); sym != nil {
 			content := p.formatHover(sym)
 			if content != "" {
