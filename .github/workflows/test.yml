@@ -22,8 +22,10 @@ jobs:
           tools: composer:v2
           coverage: none
 
-      - name: Install Laravel fixture dependencies
-        run: composer install --working-dir testdata/laravel --no-interaction --no-progress --prefer-dist --no-scripts
+      - name: Install fixture dependencies
+        run: |
+          composer install --working-dir testdata/laravel --no-interaction --no-progress --prefer-dist --no-scripts
+          composer install --working-dir testdata/symfony --no-interaction --no-progress --prefer-dist --no-scripts
 
       - name: Set up Go
         uses: actions/setup-go@v6
