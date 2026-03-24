@@ -85,6 +85,16 @@ jobs:
               go build -ldflags="-s -w -X main.version=${VERSION}" -trimpath -o "$output" ./cmd/tusk-php/
           done
 
+          # Bundle platform binaries into the VSCode extension
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            IFS='/' read -r goos goarch <<< "$target"
+            ext=""
+            if [[ "$goos" == "windows" ]]; then ext=".exe"; fi
+            vscode_dir="editors/vscode/bin/${goos}-${goarch}"
+            mkdir -p "$vscode_dir"
+            cp "dist/tusk-php-${goos}-${goarch}${ext}" "${vscode_dir}/php-lsp${ext}"
+          done
+
           npm --prefix editors/vscode install
           npm --prefix editors/vscode run compile
           cp README.md editors/vscode/README.md
