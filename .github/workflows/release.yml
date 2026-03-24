@@ -82,7 +82,7 @@ jobs:
             fi
             echo "Building ${goos}/${goarch}"
             GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
-              go build -ldflags="-s -w -X main.version=${VERSION}" -trimpath -o "$output" ./cmd/php-lsp/
+              go build -ldflags="-s -w -X main.version=${VERSION}" -trimpath -o "$output" ./cmd/tusk-php/
           done
 
           npm --prefix editors/vscode install
