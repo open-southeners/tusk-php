@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - VSCode extension failing to start the bundled LSP binary on Windows (`spawn php-lsp ENOENT`) by appending `.exe` to the PATH fallback command.
 - VSCode extension failing to start the bundled LSP binary on Linux/macOS remote environments by ensuring execute permissions after `.vsix` extraction.
+- Zed extension build failure caused by `unicode-segmentation` 1.13.0 breaking `heck` 0.4.1 (`UnicodeWords` made private); pinned to 1.12.0.
 
 ## [0.3.0] - 2026-03-24
 
