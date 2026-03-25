@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-VERSION="${VERSION:-0.3.2}"
+VERSION="${VERSION:-0.4.0}"
 INSTALL_DIR="${HOME}/.local/bin"
 mkdir -p "${INSTALL_DIR}"
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')

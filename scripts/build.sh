@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-VERSION="${VERSION:-0.3.2}"
+VERSION="${VERSION:-0.4.0}"
 OUTPUT_DIR="./build"
 VSCODE_BIN_DIR="./editors/vscode/bin"
 rm -rf "${OUTPUT_DIR}" && mkdir -p "${OUTPUT_DIR}"
