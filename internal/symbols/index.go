@@ -298,6 +298,9 @@ func (idx *Index) IndexFileWithSource(uri string, source string, src SymbolSourc
 		sym := &Symbol{Name: tr.Name, FQN: fqn, Kind: KindTrait, URI: uri, DocComment: tr.DocComment,
 			Range: symRange(tr.StartLine, tr.StartCol, len(tr.Name))}
 		idx.addSymbolWithSource(uri, sym, src)
+		for _, usedTrait := range tr.Traits {
+			idx.traitMap[fqn] = append(idx.traitMap[fqn], resolve(usedTrait))
+		}
 		for _, prop := range tr.Properties {
 			ps := &Symbol{Name: prop.Name, FQN: fqn + "::" + prop.Name, Kind: KindProperty, URI: uri,
 				Visibility: prop.Visibility, IsStatic: prop.IsStatic, Type: resolve(prop.Type.Name),
@@ -381,6 +384,7 @@ func (idx *Index) removeFileSymbols(uri string) {
 		}
 		delete(idx.implementsMap, sym.FQN)
 		delete(idx.inheritanceMap, sym.FQN)
+		delete(idx.traitMap, sym.FQN)
 	}
 	delete(idx.fileSymbols, uri)
 }

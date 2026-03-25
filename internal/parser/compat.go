@@ -90,6 +90,7 @@ type TraitNode struct {
 	FullName   string
 	Properties []PropertyNode
 	Methods    []MethodNode
+	Traits     []string
 	StartLine  int
 	StartCol   int
 	DocComment string
@@ -483,6 +484,7 @@ func toFileNode(result *ParseResult) *FileNode {
 		traitNode := TraitNode{
 			Name:      traitDef.Name,
 			FullName:  traitDef.FullName,
+			Traits:    append([]string(nil), traitDef.Traits...),
 			StartLine: traitDef.Line,
 			StartCol:  startColumnForDeclaration(result, traitDef.Name, traitDef.Line, TokenTrait),
 		}

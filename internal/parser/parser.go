@@ -67,6 +67,7 @@ type TraitDef struct {
 	FullName   string
 	Properties []PropertyDef
 	Methods    []MethodDef
+	Traits     []string
 	Line       int
 	EndLine    int
 }
@@ -924,7 +925,7 @@ func (p *structParser) parseTrait() {
 	if _, ok := p.expect(TokenOpenBrace); !ok {
 		return
 	}
-	trait.Methods, trait.Properties, _, _ = p.parseClassBody()
+	trait.Methods, trait.Properties, _, trait.Traits = p.parseClassBody()
 	trait.EndLine = p.peek().Line
 	p.result.Traits = append(p.result.Traits, trait)
 }
