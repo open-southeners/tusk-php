@@ -65,6 +65,75 @@ func (ca *ContainerAnalyzer) ResolveDependency(typeName string) *ServiceBinding 
 	return nil
 }
 
+// ResolveFacade checks whether classFQN is a Laravel Facade (extends
+// Illuminate\Support\Facades\Facade), extracts the string returned by
+// getFacadeAccessor(), and resolves it through the container bindings.
+// Returns the concrete class FQN or "" if the class is not a facade or
+// the accessor cannot be resolved.
+func (ca *ContainerAnalyzer) ResolveFacade(classFQN string) string {
+	// Check inheritance chain for the Facade base class
+	chain := ca.index.GetInheritanceChain(classFQN)
+	isFacade := false
+	for _, parent := range chain {
+		if parent == `Illuminate\Support\Facades\Facade` {
+			isFacade = true
+			break
+		}
+	}
+	if !isFacade {
+		return ""
+	}
+
+	// Find getFacadeAccessor method and extract its return string
+	accessor := ca.extractFacadeAccessor(classFQN)
+	if accessor == "" {
+		return ""
+	}
+
+	// Resolve the accessor string through the container
+	if binding := ca.ResolveDependency(accessor); binding != nil {
+		return binding.Concrete
+	}
+	// The accessor might be a class FQN directly (some facades return a class name)
+	if sym := ca.index.Lookup(accessor); sym != nil {
+		return accessor
+	}
+	return ""
+}
+
+// extractFacadeAccessor reads the source of the getFacadeAccessor method on
+// classFQN and returns the string literal it returns (e.g. "cache").
+func (ca *ContainerAnalyzer) extractFacadeAccessor(classFQN string) string {
+	members := ca.index.GetClassMembers(classFQN)
+	for _, m := range members {
+		if m.Name != "getFacadeAccessor" {
+			continue
+		}
+		if m.URI == "" || m.URI == "builtin" {
+			continue
+		}
+		path := symbols.URIToPath(m.URI)
+		content, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		return parseFacadeAccessorReturn(string(content))
+	}
+	return ""
+}
+
+var facadeAccessorReturnRegex = regexp.MustCompile(`function\s+getFacadeAccessor\s*\(\s*\)\s*(?::\s*\S+\s*)?\{[^}]*return\s+['"]([^'"]+)['"]`)
+
+// parseFacadeAccessorReturn extracts the string literal from a
+// getFacadeAccessor() method body.
+func parseFacadeAccessorReturn(source string) string {
+	m := facadeAccessorReturnRegex.FindStringSubmatch(source)
+	if len(m) >= 2 {
+		return m[1]
+	}
+	return ""
+}
+
 func (ca *ContainerAnalyzer) GetBindings() map[string]*ServiceBinding {
 	ca.mu.RLock()
 	defer ca.mu.RUnlock()

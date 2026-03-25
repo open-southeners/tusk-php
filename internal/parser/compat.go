@@ -165,6 +165,7 @@ type DocMethod struct {
 	Name        string
 	Params      string
 	Description string
+	IsStatic    bool
 }
 
 // DocTemplate represents a @template tag: @template T of SomeClass
@@ -375,6 +376,7 @@ func parseDocMethod(value string) DocMethod {
 
 	// Check if there's a static keyword prefix
 	if strings.HasPrefix(value, "static ") {
+		m.IsStatic = true
 		value = strings.TrimSpace(value[7:])
 	}
 

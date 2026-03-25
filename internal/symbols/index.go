@@ -492,6 +492,7 @@ func (idx *Index) indexVirtualMembers(uri string, parent *Symbol, src SymbolSour
 			ReturnType: resolve(method.ReturnType),
 			ParentFQN:  fqn,
 			IsVirtual:  true,
+			IsStatic:   method.IsStatic,
 			DocComment: method.Description,
 		}
 		// Parse params string into ParamInfo slice

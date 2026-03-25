@@ -125,7 +125,14 @@ func (p *Provider) GetHover(uri, source string, pos protocol.Position) *protocol
 
 	// Check for -> or :: access context
 	if classFQN := p.resolveAccessChain(chainLine, chainWordStart, lines, pos, file); classFQN != "" {
-		if sym := p.resolver.FindMember(classFQN, word); sym != nil {
+		sym := p.resolver.FindMember(classFQN, word)
+		// For Laravel facades, also look up the member on the concrete class
+		if sym == nil && p.container != nil && p.framework == "laravel" {
+			if concrete := p.container.ResolveFacade(classFQN); concrete != "" {
+				sym = p.resolver.FindMember(concrete, word)
+			}
+		}
+		if sym != nil {
 			content := p.formatHover(sym)
 
 			// Enhance with generic return type if available

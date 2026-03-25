@@ -223,33 +223,51 @@ func (p *Provider) completeStaticAccess(source, prefix string, pos protocol.Posi
 	if typeName == "" {
 		return nil
 	}
+	// Resolve Laravel facades: show the concrete class's instance methods as
+	// static completions alongside the facade's own members.
+	var facadeConcrete string
+	if p.container != nil && p.framework == "laravel" {
+		facadeConcrete = p.container.ResolveFacade(typeName)
+	}
 	var items []protocol.CompletionItem
-	for _, m := range p.index.GetClassMembers(typeName) {
-		if !m.IsStatic && m.Kind != symbols.KindConstant && m.Kind != symbols.KindEnumCase {
-			continue
-		}
-		item := protocol.CompletionItem{Label: m.Name, Detail: formatDetail(m), Documentation: formatDocumentation(m)}
-		switch m.Kind {
-		case symbols.KindMethod:
-			item.Kind = protocol.CompletionItemKindMethod
-			if parenAfterCursor {
-				item.InsertText = m.Name
-			} else {
-				item.InsertText = m.Name + "($0)"
-				item.InsertTextFormat = 2
-			}
-		case symbols.KindConstant:
-			item.Kind = protocol.CompletionItemKindConstant
-		case symbols.KindEnumCase:
-			item.Kind = protocol.CompletionItemKindEnumMember
-		case symbols.KindProperty:
-			if m.IsStatic {
-				item.Kind = protocol.CompletionItemKindProperty
-			} else {
+	seen := map[string]bool{}
+	memberSets := []string{typeName}
+	if facadeConcrete != "" {
+		memberSets = append(memberSets, facadeConcrete)
+	}
+	for _, fqn := range memberSets {
+		for _, m := range p.index.GetClassMembers(fqn) {
+			isFacadeForwarded := fqn == facadeConcrete && m.Kind == symbols.KindMethod
+			if !isFacadeForwarded && !m.IsStatic && m.Kind != symbols.KindConstant && m.Kind != symbols.KindEnumCase {
 				continue
 			}
+			if seen[m.Name] {
+				continue
+			}
+			seen[m.Name] = true
+			item := protocol.CompletionItem{Label: m.Name, Detail: formatDetail(m), Documentation: formatDocumentation(m)}
+			switch m.Kind {
+			case symbols.KindMethod:
+				item.Kind = protocol.CompletionItemKindMethod
+				if parenAfterCursor {
+					item.InsertText = m.Name
+				} else {
+					item.InsertText = m.Name + "($0)"
+					item.InsertTextFormat = 2
+				}
+			case symbols.KindConstant:
+				item.Kind = protocol.CompletionItemKindConstant
+			case symbols.KindEnumCase:
+				item.Kind = protocol.CompletionItemKindEnumMember
+			case symbols.KindProperty:
+				if m.IsStatic {
+					item.Kind = protocol.CompletionItemKindProperty
+				} else {
+					continue
+				}
+			}
+			items = append(items, item)
 		}
-		items = append(items, item)
 	}
 	return items
 }
