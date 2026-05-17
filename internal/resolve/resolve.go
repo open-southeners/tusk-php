@@ -710,6 +710,7 @@ func (r *Resolver) ResolveVariableType(varName string, lines []string, pos proto
 			if t := r.ChainResolver(rhs, strings.Join(lines, "\n"), pos, file); t != "" {
 				return t
 			}
+			break
 		}
 	}
 
