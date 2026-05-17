@@ -9,10 +9,7 @@ logged for follow-up. Ordered by severity.
 
 ## Critical
 
-### C1 — Fatal stack overflow in the hover/completion chain resolver
-- **Where:** `internal/resolve/resolve.go:678` ↔ `internal/hover/provider.go:49` ↔ `internal/completion/provider.go:35`
-- **What:** `resolveAccessChain` → `ResolveVariableType` → `ChainResolver` (`resolveExpressionType`) → `resolveAccessChain` is an infinite mutual recursion on certain inputs. It overflows the goroutine stack — a **fatal** runtime error that `recover()` cannot catch, so panic recovery does not save it. The conformance harness only avoids it by restricting hover/completion to `use`-import anchors; any real hover/completion on a member-access expression can trigger it.
-- **Fix:** Add a recursion depth counter (or a visited-expression set) in `ResolveVariableType` (`resolve.go:677`) before it calls `ChainResolver`; bail out and return an unresolved type once depth exceeds a small bound.
+_None open. (C1 resolved — see "Resolved" below.)_
 
 ---
 
@@ -95,3 +92,21 @@ logged for follow-up. Ordered by severity.
 - **Where:** `testdata/corpus/manifest.json`
 - **What:** Git tags were chosen from known release patterns but not network-verified. Uncertain: `guzzlehttp/guzzle`, `guzzlehttp/psr7`, `tempestphp/tempest` (repo may be `tempest-framework`), `laravel/framework` `v12.13.0`, `symfony/demo` `v2.7.0`.
 - **Fix:** Run `bash scripts/fetch-corpus.sh` once with network access; commit the resulting `testdata/corpus/corpus.lock` (resolved SHAs) as the true pin.
+
+### L7 — Chain-resolver depth guard fires per-method, amplifying pathological cost
+- **Where:** `internal/resolve/resolve.go` (`ResolveVariableType` / `ResolveVariableTypeTyped` depth guard)
+- **What:** The C1 fix bounds recursion via an atomic depth counter shared by both entry methods, so pathological input terminates safely. But the `ChainResolver`/`TypedChainResolver` callback itself does not increment the counter, so on a pathological self-referential chain a guarded call can still fan out into ~1000 callback invocations (bounded, quadratic-ish) before settling. No crash risk — purely cost on rare malformed input.
+- **Fix:** Also depth-guard at the callback boundary, or unify both resolvers under a single shared depth check that the callback participates in.
+
+---
+
+## Resolved
+
+### C1 — Fatal stack overflow in the hover/completion chain resolver `[resolved]`
+- Fixed by an atomic re-entrancy depth guard (`const maxResolveDepth = 32`) added to
+  `resolve.Resolver`; `ResolveVariableType` and `ResolveVariableTypeTyped` now bail out
+  (returning an empty result) once depth exceeds the bound. Regression tests in
+  `internal/resolve/recursion_test.go` reproduce the self-referential and mutual-recursion
+  cycles. The conformance harness was updated to exercise hover/completion on member-access
+  anchors (`->`, `?->`, `::`) — previously restricted to `use`-import anchors to dodge this
+  crash — and now runs that path with no overflow. Follow-up: see L7.
