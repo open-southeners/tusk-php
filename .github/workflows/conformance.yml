@@ -93,6 +93,9 @@ jobs:
       - name: Fuzz — FuzzIndexFile (120 s)
         run: go test -run='^$' -fuzz=FuzzIndexFile -fuzztime=120s ./internal/symbols/
 
+      - name: Fuzz — FuzzTokenize (120 s)
+        run: go test -run='^$' -fuzz=FuzzTokenize -fuzztime=120s ./internal/parser/
+
       - name: Upload fuzz crashers
         if: failure()
         uses: actions/upload-artifact@v4
