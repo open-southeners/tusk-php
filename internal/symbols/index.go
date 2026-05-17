@@ -37,29 +37,31 @@ const (
 )
 
 type Symbol struct {
-	Name       string
-	FQN        string
-	Kind       SymbolKind
-	Source     SymbolSource
-	URI        string
-	Range      protocol.Range
-	Visibility string
-	IsStatic   bool
-	IsAbstract bool
-	IsFinal    bool
-	IsReadonly bool
-	Type       string
-	DocComment string
-	ParentFQN  string
-	Params     []ParamInfo
-	ReturnType string
-	Children   []*Symbol
-	Implements []string
-	Extends    string
-	BackedType string
-	Value      string
-	IsVirtual  bool
-	Templates  []TemplateParam
+	Name          string
+	FQN           string
+	Kind          SymbolKind
+	Source        SymbolSource
+	URI           string
+	Range         protocol.Range
+	Visibility    string
+	SetVisibility string // PHP 8.4 asymmetric visibility (e.g. "private" in public private(set))
+	IsStatic      bool
+	IsAbstract    bool
+	IsFinal       bool
+	IsReadonly    bool
+	Type          string
+	DocComment    string
+	ParentFQN     string
+	Params        []ParamInfo
+	ReturnType    string
+	Children      []*Symbol
+	Implements    []string
+	Extends       string
+	BackedType    string
+	Value         string
+	IsVirtual     bool
+	Templates     []TemplateParam
+	Hooks         []parser.PropertyHook // PHP 8.4 property hooks (get/set accessors)
 }
 
 // TemplateParam represents a generic type parameter on a class: @template T of Model
@@ -86,8 +88,11 @@ type Index struct {
 	implementsMap        map[string][]string // class → interfaces it implements
 	reverseImplementsMap map[string][]string // interface → classes that implement it
 	traitMap             map[string][]string
-	sortedNames          []string // sorted lowercase name keys for binary search
-	sortedNamesDirty     bool     // rebuild flag
+	sortedNames          []string          // sorted lowercase name keys for binary search
+	sortedNamesDirty     bool              // rebuild flag
+	sortedFQNs           []string          // sorted FQN keys for binary search (SearchByFQNPrefix)
+	sortedFQNsDirty      bool              // rebuild flag for sortedFQNs
+	fileSource           map[string]string // URI → raw source text stored during IndexFileWithSource
 }
 
 func NewIndex() *Index {
@@ -100,6 +105,7 @@ func NewIndex() *Index {
 		implementsMap:        make(map[string][]string),
 		reverseImplementsMap: make(map[string][]string),
 		traitMap:             make(map[string][]string),
+		fileSource:           make(map[string]string),
 	}
 }
 
@@ -120,6 +126,8 @@ func (idx *Index) IndexIDEHelperFile(uri string, source string) {
 
 	// Remove any previously indexed symbols from this URI (for re-indexing)
 	idx.removeFileSymbols(uri)
+	// Store the raw source text for this URI, mirroring IndexFileWithSource.
+	idx.fileSource[uri] = source
 	if _, ok := idx.fileSymbols[uri]; !ok {
 		idx.fileSymbols[uri] = nil
 	}
@@ -211,8 +219,10 @@ func (idx *Index) IndexIDEHelperFile(uri string, source string) {
 			}
 			for _, prop := range c.Properties {
 				ps := &Symbol{Name: prop.Name, FQN: fqn + "::" + prop.Name, Kind: KindProperty, URI: uri,
-					Visibility: prop.Visibility, IsStatic: prop.IsStatic, Type: resolve(prop.Type.Name),
+					Visibility: prop.Visibility, SetVisibility: prop.SetVisibility,
+					IsStatic: prop.IsStatic, Type: resolve(prop.Type.Name),
 					DocComment: prop.DocComment, ParentFQN: fqn,
+					Hooks: append([]parser.PropertyHook(nil), prop.Hooks...),
 					Range: symRange(prop.StartLine, prop.StartCol, len(prop.Name))}
 				sym.Children = append(sym.Children, ps)
 				idx.addSymbolWithSource(uri, ps, SourceProject)
@@ -231,6 +241,8 @@ func (idx *Index) IndexFileWithSource(uri string, source string, src SymbolSourc
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	idx.removeFileSymbols(uri)
+	// Store the raw source text for this URI (replaces any previous version)
+	idx.fileSource[uri] = source
 	// Ensure the file is tracked even if it has no symbol declarations
 	if _, ok := idx.fileSymbols[uri]; !ok {
 		idx.fileSymbols[uri] = nil
@@ -267,8 +279,10 @@ func (idx *Index) IndexFileWithSource(uri string, source string, src SymbolSourc
 		}
 		for _, prop := range c.Properties {
 			ps := &Symbol{Name: prop.Name, FQN: fqn + "::" + prop.Name, Kind: KindProperty, URI: uri,
-				Visibility: prop.Visibility, IsStatic: prop.IsStatic, Type: resolve(prop.Type.Name),
+				Visibility: prop.Visibility, SetVisibility: prop.SetVisibility,
+				IsStatic: prop.IsStatic, Type: resolve(prop.Type.Name),
 				DocComment: prop.DocComment, ParentFQN: fqn,
+				Hooks: append([]parser.PropertyHook(nil), prop.Hooks...),
 				Range: symRange(prop.StartLine, prop.StartCol, len(prop.Name))}
 			sym.Children = append(sym.Children, ps)
 			idx.addSymbolWithSource(uri, ps, src)
@@ -303,8 +317,10 @@ func (idx *Index) IndexFileWithSource(uri string, source string, src SymbolSourc
 		}
 		for _, prop := range tr.Properties {
 			ps := &Symbol{Name: prop.Name, FQN: fqn + "::" + prop.Name, Kind: KindProperty, URI: uri,
-				Visibility: prop.Visibility, IsStatic: prop.IsStatic, Type: resolve(prop.Type.Name),
+				Visibility: prop.Visibility, SetVisibility: prop.SetVisibility,
+				IsStatic: prop.IsStatic, Type: resolve(prop.Type.Name),
 				DocComment: prop.DocComment, ParentFQN: fqn,
+				Hooks: append([]parser.PropertyHook(nil), prop.Hooks...),
 				Range: symRange(prop.StartLine, prop.StartCol, len(prop.Name))}
 			sym.Children = append(sym.Children, ps)
 			idx.addSymbolWithSource(uri, ps, src)
@@ -351,6 +367,7 @@ func (idx *Index) addSymbol(uri string, sym *Symbol) {
 	idx.nameIndex[sym.Name] = appendUnique(idx.nameIndex[sym.Name], sym.FQN)
 	idx.fileSymbols[uri] = append(idx.fileSymbols[uri], sym)
 	idx.sortedNamesDirty = true
+	idx.sortedFQNsDirty = true
 	// Index top-level symbols by their namespace
 	if isTopLevelSymbol(sym.Kind) {
 		idx.namespaceIndex[namespaceForFQN(sym.FQN)] = appendUnique(idx.namespaceIndex[namespaceForFQN(sym.FQN)], sym.FQN)
@@ -369,6 +386,7 @@ func (idx *Index) removeFileSymbols(uri string) {
 			idx.nameIndex[sym.Name] = removeFromSlice(fqns, sym.FQN)
 		}
 		idx.sortedNamesDirty = true
+		idx.sortedFQNsDirty = true
 		// Clean up namespace index
 		if isTopLevelSymbol(sym.Kind) {
 			ns := namespaceForFQN(sym.FQN)
@@ -387,6 +405,7 @@ func (idx *Index) removeFileSymbols(uri string) {
 		delete(idx.traitMap, sym.FQN)
 	}
 	delete(idx.fileSymbols, uri)
+	delete(idx.fileSource, uri)
 }
 
 func isTopLevelSymbol(kind SymbolKind) bool {
@@ -557,11 +576,10 @@ func (idx *Index) LookupByName(name string) []*Symbol {
 }
 
 func (idx *Index) SearchByPrefix(prefix string) []*Symbol {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-
-	// Empty prefix: return all symbols
+	// Empty prefix: return all symbols without touching the sorted slice.
 	if prefix == "" {
+		idx.mu.RLock()
+		defer idx.mu.RUnlock()
 		var results []*Symbol
 		for _, fqns := range idx.nameIndex {
 			for _, fqn := range fqns {
@@ -573,19 +591,33 @@ func (idx *Index) SearchByPrefix(prefix string) []*Symbol {
 		return results
 	}
 
-	// Rebuild sorted index if dirty
-	if idx.sortedNamesDirty || len(idx.sortedNames) == 0 {
-		idx.sortedNames = make([]string, 0, len(idx.nameIndex))
-		for name := range idx.nameIndex {
-			idx.sortedNames = append(idx.sortedNames, name)
+	// Ensure the sorted names slice is up-to-date under a write lock if needed,
+	// then perform the binary search under a read lock.
+	idx.mu.RLock()
+	needRebuild := idx.sortedNamesDirty || len(idx.sortedNames) == 0
+	idx.mu.RUnlock()
+
+	if needRebuild {
+		idx.mu.Lock()
+		// Re-check under write lock to avoid duplicate work when two goroutines
+		// both observed dirty and one completes the rebuild before the other.
+		if idx.sortedNamesDirty || len(idx.sortedNames) == 0 {
+			idx.sortedNames = make([]string, 0, len(idx.nameIndex))
+			for name := range idx.nameIndex {
+				idx.sortedNames = append(idx.sortedNames, name)
+			}
+			sort.Slice(idx.sortedNames, func(i, j int) bool {
+				return strings.ToLower(idx.sortedNames[i]) < strings.ToLower(idx.sortedNames[j])
+			})
+			idx.sortedNamesDirty = false
 		}
-		sort.Slice(idx.sortedNames, func(i, j int) bool {
-			return strings.ToLower(idx.sortedNames[i]) < strings.ToLower(idx.sortedNames[j])
-		})
-		idx.sortedNamesDirty = false
+		idx.mu.Unlock()
 	}
 
-	// Binary search for the first matching prefix
+	// Binary search for the first matching prefix under a read lock.
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
 	lp := strings.ToLower(prefix)
 	start := sort.Search(len(idx.sortedNames), func(i int) bool {
 		return strings.ToLower(idx.sortedNames[i]) >= lp
@@ -606,27 +638,75 @@ func (idx *Index) SearchByPrefix(prefix string) []*Symbol {
 	return results
 }
 
+// rebuildSortedFQNs rebuilds the sorted FQN slice used by SearchByFQNPrefix.
+// Must be called with the write lock held.
+func (idx *Index) rebuildSortedFQNs() {
+	idx.sortedFQNs = make([]string, 0, len(idx.symbols))
+	for fqn, sym := range idx.symbols {
+		// Only top-level symbols are needed for FQN-prefix search
+		if sym.Kind == KindMethod || sym.Kind == KindProperty || sym.Kind == KindConstant || sym.Kind == KindEnumCase {
+			continue
+		}
+		// Never store a symbol with an empty short name (M1 guard)
+		if sym.Name == "" {
+			continue
+		}
+		idx.sortedFQNs = append(idx.sortedFQNs, fqn)
+	}
+	sort.Slice(idx.sortedFQNs, func(i, j int) bool {
+		return strings.ToLower(idx.sortedFQNs[i]) < strings.ToLower(idx.sortedFQNs[j])
+	})
+	idx.sortedFQNsDirty = false
+}
+
 // SearchByFQNPrefix returns symbols whose FQN starts with the given prefix,
 // plus unique namespace segments at the next level for progressive completion.
 // For example, prefix "Illuminate\" returns both direct symbols in that namespace
 // and child namespace names like "Foundation", "Http", "Support", etc.
+// Uses binary search over a sorted FQN slice — O(log N + K) where K is the
+// number of matching symbols.
 func (idx *Index) SearchByFQNPrefix(prefix string) ([]*Symbol, []string) {
+	// Ensure the sorted FQN slice is up-to-date under a write lock if needed,
+	// then perform the binary search under a read lock.
+	idx.mu.RLock()
+	needRebuild := idx.sortedFQNsDirty || len(idx.sortedFQNs) == 0
+	idx.mu.RUnlock()
+
+	if needRebuild {
+		idx.mu.Lock()
+		// Re-check under write lock to avoid duplicate work when two goroutines
+		// both observed dirty and one completes the rebuild before the other.
+		if idx.sortedFQNsDirty || len(idx.sortedFQNs) == 0 {
+			idx.rebuildSortedFQNs()
+		}
+		idx.mu.Unlock()
+	}
+
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
+
+	lp := strings.ToLower(prefix)
+	// Find the first FQN >= prefix (case-insensitive)
+	start := sort.Search(len(idx.sortedFQNs), func(i int) bool {
+		return strings.ToLower(idx.sortedFQNs[i]) >= lp
+	})
 
 	var syms []*Symbol
 	nsSeen := make(map[string]bool)
 	var nsSegments []string
-	lp := strings.ToLower(prefix)
 
-	for fqn, sym := range idx.symbols {
-		// Skip children (methods, properties, constants, enum cases)
-		if sym.Kind == KindMethod || sym.Kind == KindProperty || sym.Kind == KindConstant || sym.Kind == KindEnumCase {
-			continue
-		}
+	for i := start; i < len(idx.sortedFQNs); i++ {
+		fqn := idx.sortedFQNs[i]
 		if !strings.HasPrefix(strings.ToLower(fqn), lp) {
+			break
+		}
+		sym, ok := idx.symbols[fqn]
+		if !ok || sym.Name == "" {
+			// M1: skip empty-name symbols
 			continue
 		}
+		// Compute the suffix after the prefix (using original case for slicing)
+		// Account for case-insensitive prefix match: find actual offset
 		rest := fqn[len(prefix):]
 		if sepIdx := strings.Index(rest, "\\"); sepIdx >= 0 {
 			// This symbol is in a deeper namespace — extract the next segment
@@ -884,6 +964,15 @@ func (idx *Index) GetAllFileURIs() []string {
 		uris = append(uris, uri)
 	}
 	return uris
+}
+
+// GetFileSource returns the raw PHP source text stored for the given URI,
+// or an empty string if the URI has not been indexed or was removed.
+// This allows the analyzer to avoid re-reading files from disk.
+func (idx *Index) GetFileSource(uri string) string {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.fileSource[uri]
 }
 
 func URIToPath(uri string) string {

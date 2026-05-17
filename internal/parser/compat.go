@@ -27,13 +27,15 @@ type ParamNode struct {
 }
 
 type PropertyNode struct {
-	Name       string
-	Type       TypeNode
-	Visibility string
-	IsStatic   bool
-	DocComment string
-	StartLine  int
-	StartCol   int
+	Name          string
+	Type          TypeNode
+	Visibility    string
+	SetVisibility string // PHP 8.4 asymmetric visibility (e.g. "private" in public private(set))
+	IsStatic      bool
+	DocComment    string
+	StartLine     int
+	StartCol      int
+	Hooks         []PropertyHook // PHP 8.4 property hooks (get/set accessors)
 }
 
 type MethodNode struct {
@@ -545,15 +547,20 @@ func toFileNode(result *ParseResult) *FileNode {
 }
 
 func toPropertyNode(result *ParseResult, propertyDef PropertyDef) PropertyNode {
-	return PropertyNode{
-		Name:       propertyDef.Name,
-		Type:       TypeNode{Name: propertyDef.Type},
-		Visibility: propertyDef.Visibility,
-		IsStatic:   propertyDef.IsStatic,
-		DocComment: propertyDef.DocComment,
-		StartLine:  propertyDef.Line,
-		StartCol:   nameColumnOnLine(result, propertyDef.Name, propertyDef.Line),
+	node := PropertyNode{
+		Name:          propertyDef.Name,
+		Type:          TypeNode{Name: propertyDef.Type},
+		Visibility:    propertyDef.Visibility,
+		SetVisibility: propertyDef.SetVisibility,
+		IsStatic:      propertyDef.IsStatic,
+		DocComment:    propertyDef.DocComment,
+		StartLine:     propertyDef.Line,
+		StartCol:      nameColumnOnLine(result, propertyDef.Name, propertyDef.Line),
 	}
+	if len(propertyDef.Hooks) > 0 {
+		node.Hooks = append([]PropertyHook(nil), propertyDef.Hooks...)
+	}
+	return node
 }
 
 func toMethodNode(result *ParseResult, methodDef MethodDef) MethodNode {
