@@ -1,0 +1,95 @@
+name: Conformance
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    # Nightly at 02:30 UTC
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # PR job: fetch only the "pr" tier (fast, small repos), run conformance suite
+  # ---------------------------------------------------------------------------
+  conformance-pr:
+    name: Conformance (PR subset)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Cache corpus repos (PR tier)
+        uses: actions/cache@v4
+        with:
+          path: testdata/corpus/_repos
+          key: corpus-pr-${{ hashFiles('testdata/corpus/manifest.json') }}
+          restore-keys: |
+            corpus-pr-
+
+      - name: Fetch PR-tier corpus
+        run: bash scripts/fetch-corpus.sh --tier pr
+
+      - name: Build
+        run: go build ./...
+
+      - name: Run conformance suite (PR subset)
+        run: go test -tags=conformance -race -timeout 120s ./internal/conformance/...
+
+  # ---------------------------------------------------------------------------
+  # Nightly / manual job: full corpus + fuzz targets
+  # ---------------------------------------------------------------------------
+  conformance-nightly:
+    name: Conformance (full) + Fuzz
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Cache full corpus repos
+        uses: actions/cache@v4
+        with:
+          path: testdata/corpus/_repos
+          key: corpus-all-${{ hashFiles('testdata/corpus/manifest.json') }}
+          restore-keys: |
+            corpus-all-
+
+      - name: Fetch full corpus
+        run: bash scripts/fetch-corpus.sh --tier all
+
+      - name: Build
+        run: go build ./...
+
+      - name: Run conformance suite (full corpus)
+        run: go test -tags=conformance -race -timeout 600s ./internal/conformance/...
+
+      - name: Fuzz — FuzzParseFile (120 s)
+        run: go test -run='^$' -fuzz=FuzzParseFile -fuzztime=120s ./internal/parser/
+
+      - name: Fuzz — FuzzIndexFile (120 s)
+        run: go test -run='^$' -fuzz=FuzzIndexFile -fuzztime=120s ./internal/symbols/
+
+      - name: Upload fuzz crashers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashers
+          path: |
+            testdata/fuzz/
+            internal/parser/testdata/fuzz/
+            internal/symbols/testdata/fuzz/
+          if-no-files-found: ignore
