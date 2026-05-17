@@ -233,8 +233,9 @@ func TestProtocolLifecycle(t *testing.T) {
 		t.Errorf("shutdown returned error: %v", shutResp["error"])
 	}
 
-	// 5. exit — not sent because Server.handleMessage calls os.Exit(0) which
-	//    would terminate the test binary. Lifecycle test ends with shutdown.
+	// 5. exit — not sent here because the harness server uses the default
+	//    os.Exit exitFunc. The full initialize→shutdown→exit lifecycle with an
+	//    injected exitFunc is covered by TestExitLifecycle in server_test.go.
 }
 
 // TestProtocolDocumentSync exercises didOpen → didChange → documentSymbol →

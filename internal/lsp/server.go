@@ -30,6 +30,13 @@ import (
 const ServerName = "php-lsp"
 const ServerVersion = "0.4.0"
 
+// largeDocThreshold is the line-count above which document indexing on
+// didOpen/didChange is offloaded to a background goroutine via goSafe so
+// that the JSON-RPC message loop is not stalled by expensive parses.
+// Documents at or below this threshold are indexed synchronously, which
+// keeps ordinary files (and all test fixtures) deterministic.
+const largeDocThreshold = 5000
+
 type Server struct {
 	cfg         *config.Config
 	index       *symbols.Index
@@ -47,16 +54,25 @@ type Server struct {
 	writer      io.Writer
 	logger      *log.Logger
 	shutdown    bool
-	strict      bool // when true, recovered panics are re-raised after logging
+	strict      bool      // when true, recovered panics are re-raised after logging
+	exitFunc    func(int) // called by the "exit" notification handler; defaults to os.Exit
 }
 
 func NewServer(reader io.Reader, writer io.Writer, logger *log.Logger) *Server {
-	return &Server{cfg: config.DefaultConfig(), index: symbols.NewIndex(), schemaCache: models.NewSchemaCache(), documents: make(map[string]string), reader: bufio.NewReader(reader), writer: writer, logger: logger}
+	return &Server{cfg: config.DefaultConfig(), index: symbols.NewIndex(), schemaCache: models.NewSchemaCache(), documents: make(map[string]string), reader: bufio.NewReader(reader), writer: writer, logger: logger, exitFunc: os.Exit}
 }
 
-// SetStrict enables or disables strict panic mode. In strict mode, recovered
-// panics are re-raised after logging so callers can detect "should-not-happen"
-// panics (e.g. during conformance testing) rather than silently swallowing them.
+// SetStrict enables or disables strict panic mode.
+//
+// In strict mode (strict=true) any panic recovered by recoverPanic — including
+// panics that originate inside goSafe background goroutines — is re-raised
+// after logging. This means a single recovered panic in any goroutine will
+// terminate the process, making it suitable for conformance test harnesses that
+// must treat "should-not-happen" panics as fatal failures rather than silently
+// swallowing them.
+//
+// In the default (non-strict) mode all panics are caught, logged, and the
+// server continues running; individual requests may silently return no result.
 func (s *Server) SetStrict(strict bool) {
 	s.strict = strict
 }
@@ -79,6 +95,11 @@ func (s *Server) Run() error {
 	}
 }
 
+// recoverPanic is intended to be called via defer. It catches any in-flight
+// panic, logs it with a stack trace, and — when strict mode is active — re-
+// raises it so the process terminates. This re-raise behaviour also applies to
+// panics originating inside goSafe background goroutines; in strict mode even
+// a background goroutine panic is fatal.
 func (s *Server) recoverPanic(context string) {
 	if r := recover(); r != nil {
 		s.logger.Printf("Panic in %s: %v\n%s", context, r, debug.Stack())
@@ -197,7 +218,7 @@ func (s *Server) handleMessage(msg *jsonRPCMessage) {
 		s.shutdown = true
 		s.sendResponse(msg.ID, nil)
 	case "exit":
-		os.Exit(0)
+		s.exitFunc(0)
 	case "textDocument/didOpen":
 		s.handleDidOpen(msg)
 	case "textDocument/didChange":
@@ -330,12 +351,14 @@ func (s *Server) handleDidOpen(msg *jsonRPCMessage) {
 	if json.Unmarshal(msg.Params, &params) != nil {
 		return
 	}
+	uri := params.TextDocument.URI
+	text := params.TextDocument.Text
 	s.docMu.Lock()
-	s.documents[params.TextDocument.URI] = params.TextDocument.Text
+	s.documents[uri] = text
 	s.docMu.Unlock()
-	s.indexFileByURI(params.TextDocument.URI, params.TextDocument.Text)
+	s.indexDocumentMaybeAsync(uri, text)
 	if s.cfg.DiagnosticsEnabled {
-		s.publishDiagnostics(params.TextDocument.URI, params.TextDocument.Text)
+		s.publishDiagnostics(uri, text)
 	}
 }
 
@@ -346,13 +369,28 @@ func (s *Server) handleDidChange(msg *jsonRPCMessage) {
 	}
 	if len(params.ContentChanges) > 0 {
 		source := params.ContentChanges[len(params.ContentChanges)-1].Text
+		uri := params.TextDocument.URI
 		s.docMu.Lock()
-		s.documents[params.TextDocument.URI] = source
+		s.documents[uri] = source
 		s.docMu.Unlock()
-		s.indexFileByURI(params.TextDocument.URI, source)
+		s.indexDocumentMaybeAsync(uri, source)
 		if s.cfg.DiagnosticsEnabled {
-			s.publishDiagnostics(params.TextDocument.URI, source)
+			s.publishDiagnostics(uri, source)
 		}
+	}
+}
+
+// indexDocumentMaybeAsync indexes source synchronously for small documents
+// (line count <= largeDocThreshold) so that ordinary editor interactions
+// remain deterministic. For large documents the indexing is offloaded to a
+// background goroutine via goSafe so the JSON-RPC message loop is not stalled.
+func (s *Server) indexDocumentMaybeAsync(uri, source string) {
+	if strings.Count(source, "\n") > largeDocThreshold {
+		s.goSafe("indexFileByURI:"+uri, func() {
+			s.indexFileByURI(uri, source)
+		})
+	} else {
+		s.indexFileByURI(uri, source)
 	}
 }
 
