@@ -6,12 +6,20 @@ package resolve
 
 import (
 	"strings"
+	"sync/atomic"
 
 	"github.com/open-southeners/tusk-php/internal/parser"
 	"github.com/open-southeners/tusk-php/internal/phparray"
 	"github.com/open-southeners/tusk-php/internal/protocol"
 	"github.com/open-southeners/tusk-php/internal/symbols"
 )
+
+// maxResolveDepth is the maximum re-entrancy depth for ResolveVariableType and
+// ResolveVariableTypeTyped. Each call increments the counter; if the counter
+// exceeds this bound the call returns an empty result immediately to break the
+// cycle. A bound of 32 is far above any real method-chain depth (typical chains
+// are 2–8 hops) but safely below the goroutine stack limit.
+const maxResolveDepth = 32
 
 // Resolver provides shared resolution methods that depend on the symbol index.
 type Resolver struct {
@@ -24,6 +32,12 @@ type Resolver struct {
 	// preserving generic parameters. Used for variable type inference that
 	// needs to carry generic context through assignments.
 	TypedChainResolver func(expr string, source string, pos protocol.Position, file *parser.FileNode) ResolvedType
+	// resolveDepth is an atomic re-entrancy counter incremented on every call to
+	// ResolveVariableType / ResolveVariableTypeTyped. When it exceeds maxResolveDepth
+	// (indicating a chain-resolver cycle) the method returns an empty result
+	// immediately, breaking the infinite mutual recursion that would otherwise
+	// overflow the goroutine stack with an uncatchable fatal error.
+	resolveDepth atomic.Int32
 }
 
 // NewResolver creates a resolver with the given symbol index.
@@ -483,6 +497,16 @@ func (r *Resolver) MemberType(member *symbols.Symbol, file *parser.FileNode) str
 // Used by the typed chain resolver so that $categories = Category::query()->get()
 // results in $categories having type Collection<int, Category>.
 func (r *Resolver) ResolveVariableTypeTyped(varName string, lines []string, pos protocol.Position, file *parser.FileNode) ResolvedType {
+	// Guard against infinite mutual recursion with the chain resolver callbacks.
+	// ChainResolver/TypedChainResolver can call back into this function, forming a
+	// cycle on inputs like "$x = $x->foo()". An atomic counter breaks the cycle
+	// without holding a lock, so concurrent resolution on a shared Resolver is safe.
+	depth := r.resolveDepth.Add(1)
+	defer r.resolveDepth.Add(-1)
+	if depth > maxResolveDepth {
+		return ResolvedType{}
+	}
+
 	if file == nil {
 		return ResolvedType{}
 	}
@@ -600,6 +624,14 @@ func (r *Resolver) ResolveVariableTypeTyped(varName string, lines []string, pos 
 // method/function parameters, class properties, $var = new ClassName(...),
 // @var annotations, and literal type inference.
 func (r *Resolver) ResolveVariableType(varName string, lines []string, pos protocol.Position, file *parser.FileNode) string {
+	// Guard against infinite mutual recursion with the ChainResolver callback.
+	// See the equivalent guard on ResolveVariableTypeTyped for a full explanation.
+	depth := r.resolveDepth.Add(1)
+	defer r.resolveDepth.Add(-1)
+	if depth > maxResolveDepth {
+		return ""
+	}
+
 	if file == nil {
 		return ""
 	}
