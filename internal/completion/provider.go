@@ -2,6 +2,7 @@ package completion
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/open-southeners/tusk-php/internal/container"
@@ -62,6 +63,42 @@ func (p *Provider) SetArrayResolver(resolver *models.FrameworkArrayResolver) {
 	p.arrayResolver = resolver
 }
 
+// sanitizeCompletions is the authoritative post-processing step applied to every
+// GetCompletions result. It performs two operations:
+//
+//  1. (M1) Filters out any item whose Label is empty — these are invalid LSP
+//     items that some editors surface as blank entries.
+//
+//  2. (M2) Sorts the slice deterministically so that two identical calls on the
+//     same input always produce byte-identical results. The sort key hierarchy
+//     preserves the intended priority bucketing already encoded in SortText
+//     (e.g., "0"–"5" prefixes) and then breaks ties alphabetically:
+//     primary: SortText, secondary: Label, tertiary: Kind (numeric), quaternary: Detail.
+func sanitizeCompletions(items []protocol.CompletionItem) []protocol.CompletionItem {
+	// M1 — filter empty labels
+	filtered := items[:0]
+	for _, item := range items {
+		if item.Label != "" {
+			filtered = append(filtered, item)
+		}
+	}
+	// M2 — deterministic sort
+	sort.SliceStable(filtered, func(i, j int) bool {
+		a, b := filtered[i], filtered[j]
+		if a.SortText != b.SortText {
+			return a.SortText < b.SortText
+		}
+		if a.Label != b.Label {
+			return a.Label < b.Label
+		}
+		if a.Kind != b.Kind {
+			return a.Kind < b.Kind
+		}
+		return a.Detail < b.Detail
+	})
+	return filtered
+}
+
 func (p *Provider) GetCompletions(uri, source string, pos protocol.Position) []protocol.CompletionItem {
 	lines := resolve.SplitLines(source)
 	line := resolve.LineAt(lines, pos.Line)
@@ -95,67 +132,67 @@ func (p *Provider) GetCompletions(uri, source string, pos protocol.Position) []p
 	file := parser.ParseFile(source)
 
 	if strings.HasSuffix(trimmed, "->") || strings.HasSuffix(trimmed, "?->") {
-		return p.completeMemberAccess(uri, source, pos, prefix, file, parenAfterCursor)
+		return sanitizeCompletions(p.completeMemberAccess(uri, source, pos, prefix, file, parenAfterCursor))
 	}
 	// Container argument context takes priority over :: detection
 	// (e.g. app(Request::class) should not trigger static access)
 	if _, _, isContainer := extractContainerArgContext(trimmed); !isContainer {
 		if strings.HasSuffix(trimmed, "::") {
-			return p.completeStaticAccess(source, prefix, pos, file, parenAfterCursor)
+			return sanitizeCompletions(p.completeStaticAccess(source, prefix, pos, file, parenAfterCursor))
 		}
 		// Typing after -> or :: (e.g. "$foo->ba" or "Foo::cr")
 		if memberCtx, filter := detectMemberContext(trimmed); memberCtx != "" {
 			if strings.Contains(memberCtx, "::") {
 				items := p.completeStaticAccess(source, memberCtx, pos, file, parenAfterCursor)
-				return filterByPrefix(items, filter)
+				return sanitizeCompletions(filterByPrefix(items, filter))
 			}
 			items := p.completeMemberAccess(uri, source, pos, memberCtx, file, parenAfterCursor)
-			return filterByPrefix(items, filter)
+			return sanitizeCompletions(filterByPrefix(items, filter))
 		}
 	}
 	if strings.HasSuffix(trimmed, "|>") {
 		currentNS := extractNamespace(source)
-		return p.completePipe(currentNS)
+		return sanitizeCompletions(p.completePipe(currentNS))
 	}
 	if strings.Contains(trimmed, "#[") && !strings.Contains(trimmed, "]") {
-		return p.completeAttribute()
+		return sanitizeCompletions(p.completeAttribute())
 	}
 	words := strings.Fields(trimmed)
 	if len(words) >= 1 && (words[len(words)-1] == "new" || (len(words) >= 2 && words[len(words)-2] == "new")) {
 		currentNS := extractNamespace(source)
-		return p.completeNew(prefix, currentNS, source, file)
+		return sanitizeCompletions(p.completeNew(prefix, currentNS, source, file))
 	}
 	if len(words) >= 1 && words[0] == "use" {
 		currentNS := extractNamespace(source)
-		return p.completeUse(prefix, currentNS)
+		return sanitizeCompletions(p.completeUse(prefix, currentNS))
 	}
 	// Builder column/relation argument completion: ->where('col, ->with('rel
 	if method, partial, quote, ok := extractBuilderArgContext(trimmed); ok {
 		if items := p.completeBuilderArg(method, partial, quote, prefix, source, pos, file); items != nil {
-			return items
+			return sanitizeCompletions(items)
 		}
 	}
 	// Array key completion: $var['partial or $var['key1']['partial (nested)
 	if ctx := parseArrayKeyContext(prefix); ctx != nil {
-		return p.completeArrayKeys(source, pos, ctx, file)
+		return sanitizeCompletions(p.completeArrayKeys(source, pos, ctx, file))
 	}
 	// Config result array access: config('database')['connections']['
 	if ctx := parseConfigResultArrayContext(prefix); ctx != nil {
-		return p.completeConfigResultKeys(ctx)
+		return sanitizeCompletions(p.completeConfigResultKeys(ctx))
 	}
 	// Config key completion: config('database.|') with dot-notation navigation
 	if configPath, partial, quote, ok := extractConfigArgContext(trimmed); ok {
-		return p.completeConfigKeys(configPath, partial, quote)
+		return sanitizeCompletions(p.completeConfigKeys(configPath, partial, quote))
 	}
 	if filter, quoteCtx, ok := extractContainerArgContext(trimmed); ok {
 		currentNS := extractNamespace(source)
-		return p.completeContainerResolve(source, filter, currentNS, quoteCtx, file)
+		return sanitizeCompletions(p.completeContainerResolve(source, filter, currentNS, quoteCtx, file))
 	}
 	currentNS := extractNamespace(source)
 	// Detect namespace path typing (contains \)
 	search := extractLastWord(prefix)
 	if strings.Contains(search, "\\") {
-		return p.completeNamespacePath(search, currentNS)
+		return sanitizeCompletions(p.completeNamespacePath(search, currentNS))
 	}
 	items := p.completeGlobal(prefix, currentNS, source, file)
 	// Add $this if inside a class method
@@ -175,7 +212,7 @@ func (p *Provider) GetCompletions(uri, source string, pos protocol.Position) []p
 			}
 		}
 	}
-	return items
+	return sanitizeCompletions(items)
 }
 
 func (p *Provider) completeMemberAccess(uri, source string, pos protocol.Position, prefix string, file *parser.FileNode, parenAfterCursor bool) []protocol.CompletionItem {
