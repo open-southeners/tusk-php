@@ -74,6 +74,10 @@ func (p *Provider) formatHoverDeclaration(sym *symbols.Symbol) string {
 			t = "mixed"
 		}
 		sb.WriteString(vis)
+		// PHP 8.4 asymmetric visibility: e.g. public private(set) string $x
+		if sym.SetVisibility != "" {
+			sb.WriteString(fmt.Sprintf(" %s(set)", sym.SetVisibility))
+		}
 		if sym.IsStatic {
 			sb.WriteString(" static")
 		}
@@ -85,6 +89,14 @@ func (p *Provider) formatHoverDeclaration(sym *symbols.Symbol) string {
 			propName = "$" + propName
 		}
 		sb.WriteString(fmt.Sprintf(" %s %s", t, propName))
+		// PHP 8.4 property hooks: e.g. { get; set; }
+		if len(sym.Hooks) > 0 {
+			hookNames := make([]string, len(sym.Hooks))
+			for i, h := range sym.Hooks {
+				hookNames[i] = h.Kind + ";"
+			}
+			sb.WriteString(" { " + strings.Join(hookNames, " ") + " }")
+		}
 	case symbols.KindEnum:
 		sb.WriteString("enum " + sym.Name)
 		if sym.BackedType != "" {
