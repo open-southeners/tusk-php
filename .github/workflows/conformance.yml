@@ -37,7 +37,7 @@ jobs:
       - name: Configure git authentication
         env:
           GH_TOKEN: ${{ github.token }}
-        run: git config --global url."https://${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+        run: git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
 
       - name: Fetch PR-tier corpus
         run: bash scripts/fetch-corpus.sh --tier pr
@@ -76,7 +76,7 @@ jobs:
       - name: Configure git authentication
         env:
           GH_TOKEN: ${{ github.token }}
-        run: git config --global url."https://${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+        run: git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
 
       - name: Fetch full corpus
         run: bash scripts/fetch-corpus.sh --tier all
