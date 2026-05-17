@@ -2,7 +2,7 @@
   {
     "_comment": "refs are git tags pinned at authoring time (2026-05-17); verify and repin SHAs in corpus.lock after the first successful fetch-corpus.sh run",
     "name": "guzzlehttp/psr7",
-    "repo": "https://github.com/guzzlehttp/psr7.git",
+    "repo": "https://github.com/guzzle/psr7.git",
     "ref": "2.7.0",
     "tier": "pr",
     "category": "library"
@@ -30,7 +30,7 @@
   },
   {
     "name": "guzzlehttp/guzzle",
-    "repo": "https://github.com/guzzlehttp/guzzle.git",
+    "repo": "https://github.com/guzzle/guzzle.git",
     "ref": "7.9.2",
     "tier": "nightly",
     "category": "library"
@@ -38,7 +38,7 @@
   {
     "name": "symfony/string",
     "repo": "https://github.com/symfony/string.git",
-    "ref": "v7.2.5",
+    "ref": "v7.2.6",
     "tier": "nightly",
     "category": "library"
   },
@@ -80,7 +80,7 @@
   {
     "name": "tempestphp/tempest",
     "repo": "https://github.com/tempestphp/tempest-framework.git",
-    "ref": "1.5.0",
+    "ref": "v1.5.0",
     "tier": "nightly",
     "category": "framework"
   },
