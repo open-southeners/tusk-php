@@ -28,7 +28,7 @@ import (
 )
 
 const ServerName = "php-lsp"
-const ServerVersion = "0.4.0"
+const ServerVersion = "0.5.0"
 
 // largeDocThreshold is the line-count above which document indexing on
 // didOpen/didChange is offloaded to a background goroutine via goSafe so

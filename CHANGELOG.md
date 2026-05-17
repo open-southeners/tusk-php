@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-17
+
+### Added
+
+- PHP 8.3–8.5 syntax support in the parser: property hooks (`{ get => ...; set => ...; }`), the `|>` pipe operator, asymmetric visibility (`public private(set)`), and dynamic class constant fetch (`Class::{$name}`) — constructs that were previously silently dropped or mis-parsed.
+- Hover cards for properties now show PHP 8.4 property hooks and asymmetric `(set)` visibility.
+
+### Changed
+
+- Faster workspace-wide symbol prefix search via binary lookup, improving completion responsiveness on large projects.
+- Find references now reuses indexed in-memory source instead of re-reading every file from disk on each request.
+- Large files are indexed off the JSON-RPC message loop, keeping the server responsive while big documents are processed.
+
+### Fixed
+
+- Fatal crash (stack overflow) in hover and completion when resolving self-referential or mutually-referential variable assignments.
+- Excessive work and apparent hangs in the variable-type chain resolver on certain repeated assignment patterns.
+- Property hook bodies leaking their local variables (`$value`, `$this`) as spurious class properties in completion and document symbols.
+- Completion returning blank entries when completing namespace segments in `use` statements.
+- Completion results being returned in a non-deterministic order between identical requests.
+- Signature help highlighting a parameter position past the end of the parameter list when more arguments than parameters were typed.
+
 ## [0.4.0] - 2026-03-25
 
 ### Added
