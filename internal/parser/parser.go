@@ -113,15 +113,22 @@ type MethodDef struct {
 	DocComment string
 }
 
+// PropertyHook represents a single get or set accessor in a PHP 8.4 property hook block.
+type PropertyHook struct {
+	Kind string // "get" or "set"
+}
+
 type PropertyDef struct {
-	Name       string
-	Type       string
-	Visibility string
-	IsStatic   bool
-	IsReadonly bool
-	HasDefault bool
-	Line       int
-	DocComment string
+	Name          string
+	Type          string
+	Visibility    string
+	SetVisibility string // PHP 8.4 asymmetric visibility: e.g. "private" in public private(set)
+	IsStatic      bool
+	IsReadonly    bool
+	HasDefault    bool
+	Hooks         []PropertyHook // PHP 8.4 property hooks (get/set accessors)
+	Line          int
+	DocComment    string
 }
 
 type ParamDef struct {
@@ -205,6 +212,7 @@ const (
 	TokenColon
 	TokenQuestion
 	TokenPipe
+	TokenPipeArrow // |> (PHP 8.5 pipe operator)
 	TokenAmpersand
 	TokenAt
 	TokenHash
@@ -371,9 +379,9 @@ func tokenize(source string) ([]Token, []ParseError) {
 				offset++
 			}
 			tokens = append(tokens, Token{TokenDocComment, source[start:offset], startLine, startCol, start})
-		if !strings.HasSuffix(source[start:offset], "*/") {
-			errors = append(errors, ParseError{Message: "unterminated doc comment", Line: startLine, Column: startCol})
-		}
+			if !strings.HasSuffix(source[start:offset], "*/") {
+				errors = append(errors, ParseError{Message: "unterminated doc comment", Line: startLine, Column: startCol})
+			}
 			continue
 		}
 
@@ -397,9 +405,9 @@ func tokenize(source string) ([]Token, []ParseError) {
 				offset++
 			}
 			tokens = append(tokens, Token{TokenComment, source[start:offset], line, col, start})
-		if !strings.HasSuffix(source[start:offset], "*/") {
-			errors = append(errors, ParseError{Message: "unterminated comment", Line: line, Column: col})
-		}
+			if !strings.HasSuffix(source[start:offset], "*/") {
+				errors = append(errors, ParseError{Message: "unterminated comment", Line: line, Column: col})
+			}
 			continue
 		}
 
@@ -450,10 +458,10 @@ func tokenize(source string) ([]Token, []ParseError) {
 				offset++
 			}
 			val := source[start:offset]
-		tokens = append(tokens, Token{TokenStringLiteral, val, startLine, startCol, start})
-		if len(val) < 2 || val[len(val)-1] != byte(quote) {
-			errors = append(errors, ParseError{Message: "unterminated string", Line: startLine, Column: startCol})
-		}
+			tokens = append(tokens, Token{TokenStringLiteral, val, startLine, startCol, start})
+			if len(val) < 2 || val[len(val)-1] != byte(quote) {
+				errors = append(errors, ParseError{Message: "unterminated string", Line: startLine, Column: startCol})
+			}
 			continue
 		}
 
@@ -513,6 +521,12 @@ func tokenize(source string) ([]Token, []ParseError) {
 				continue
 			case "::":
 				tokens = append(tokens, Token{TokenDoubleColon, "::", line, col, offset})
+				offset += 2
+				col += 2
+				continue
+			case "|>":
+				// PHP 8.5 pipe operator — must be checked before the single-char '|' case
+				tokens = append(tokens, Token{TokenPipeArrow, "|>", line, col, offset})
 				offset += 2
 				col += 2
 				continue
@@ -1062,18 +1076,34 @@ func (p *structParser) parseClassBody() (methods []MethodDef, props []PropertyDe
 		}
 
 		visibility := "public"
+		setVisibility := ""
+		visibilitySet := false // tracks whether we already have a primary visibility
 		isStatic, isAbstract, isFinal, isReadonly := false, false, false, false
 		for {
 			switch p.peek().Kind {
-			case TokenPublic:
-				visibility = "public"
+			case TokenPublic, TokenProtected, TokenPrivate:
+				vis := "public"
+				if p.peek().Kind == TokenProtected {
+					vis = "protected"
+				} else if p.peek().Kind == TokenPrivate {
+					vis = "private"
+				}
 				p.advance()
-			case TokenProtected:
-				visibility = "protected"
-				p.advance()
-			case TokenPrivate:
-				visibility = "private"
-				p.advance()
+				// Check for PHP 8.4 asymmetric-visibility qualifier: vis(set) or vis(get).
+				// When a qualifier is present this modifier describes set/write access only;
+				// the previously set visibility is the read/primary access level.
+				qual := p.tryConsumeAsymmetricQualifier()
+				if qual != "" {
+					// This is the secondary (write) visibility — record it and keep the
+					// primary visibility unchanged.
+					setVisibility = vis
+				} else {
+					// Primary visibility — only accept it if we haven't set one yet.
+					if !visibilitySet {
+						visibility = vis
+						visibilitySet = true
+					}
+				}
 			case TokenStatic:
 				isStatic = true
 				p.advance()
@@ -1170,17 +1200,24 @@ func (p *structParser) parseClassBody() (methods []MethodDef, props []PropertyDe
 			}
 			if p.peek().Kind == TokenEquals {
 				p.advance()
-				c.Value = p.peek().Value
-				p.advance()
+				// Record the immediate value token for simple constants.
+				if p.peek().Kind != TokenSemicolon && p.peek().Kind != TokenEOF {
+					c.Value = p.peek().Value
+				}
+				// Consume the full value expression, including PHP 8.3 dynamic const
+				// fetches like Colors::{$name} where '{' must not escape to the outer
+				// class-body depth counter.
+				p.skipUntil(TokenSemicolon)
 			}
 			p.expect(TokenSemicolon)
 			consts = append(consts, c)
 
 		case TokenVariable:
 			prop := PropertyDef{
-				Visibility: visibility, IsStatic: isStatic,
-				IsReadonly: isReadonly, DocComment: docComment,
-				Line: p.peek().Line, Name: p.peek().Value,
+				Visibility: visibility, SetVisibility: setVisibility,
+				IsStatic: isStatic, IsReadonly: isReadonly,
+				DocComment: docComment, Line: p.peek().Line,
+				Name: p.peek().Value,
 			}
 			p.advance()
 			if p.peek().Kind == TokenEquals {
@@ -1188,7 +1225,12 @@ func (p *structParser) parseClassBody() (methods []MethodDef, props []PropertyDe
 				p.advance()
 				p.skipUntil(TokenSemicolon)
 			}
-			p.expect(TokenSemicolon)
+			// PHP 8.4 property hooks: { get => ...; set => ...; }
+			if p.peek().Kind == TokenOpenBrace {
+				prop.Hooks = p.parsePropertyHooks()
+			} else {
+				p.expect(TokenSemicolon)
+			}
 			props = append(props, prop)
 
 		case TokenIdentifier, TokenQuestion:
@@ -1201,7 +1243,7 @@ func (p *structParser) parseClassBody() (methods []MethodDef, props []PropertyDe
 			if isNullable {
 				typeName = "?" + typeName
 			}
-			// Union/intersection
+			// Union/intersection types (TokenPipeArrow must NOT be consumed here)
 			for p.peek().Kind == TokenPipe || p.peek().Kind == TokenAmpersand {
 				op := p.peek().Value
 				p.advance()
@@ -1209,10 +1251,10 @@ func (p *structParser) parseClassBody() (methods []MethodDef, props []PropertyDe
 			}
 			if p.peek().Kind == TokenVariable {
 				prop := PropertyDef{
-					Visibility: visibility, IsStatic: isStatic,
-					IsReadonly: isReadonly, Type: typeName,
-					DocComment: docComment, Line: p.peek().Line,
-					Name: p.peek().Value,
+					Visibility: visibility, SetVisibility: setVisibility,
+					IsStatic: isStatic, IsReadonly: isReadonly,
+					Type: typeName, DocComment: docComment,
+					Line: p.peek().Line, Name: p.peek().Value,
 				}
 				p.advance()
 				if p.peek().Kind == TokenEquals {
@@ -1220,7 +1262,12 @@ func (p *structParser) parseClassBody() (methods []MethodDef, props []PropertyDe
 					p.advance()
 					p.skipUntil(TokenSemicolon)
 				}
-				p.expect(TokenSemicolon)
+				// PHP 8.4 property hooks: { get => ...; set => ...; }
+				if p.peek().Kind == TokenOpenBrace {
+					prop.Hooks = p.parsePropertyHooks()
+				} else {
+					p.expect(TokenSemicolon)
+				}
 				props = append(props, prop)
 			} else {
 				p.advance()
@@ -1355,4 +1402,117 @@ func isTypeKeyword(kind TokenKind) bool {
 		return true
 	}
 	return false
+}
+
+// tryConsumeAsymmetricQualifier checks for a PHP 8.4 asymmetric-visibility
+// qualifier immediately after a visibility keyword: e.g. private(set) or
+// public(get). If found, it consumes the "(set)"/"(get)" tokens and returns
+// the qualifier name ("set" or "get"). Otherwise it returns "" and leaves the
+// token stream unchanged.
+func (p *structParser) tryConsumeAsymmetricQualifier() string {
+	// We need: TokenOpenParen, then an identifier whose value is "set" or "get",
+	// then TokenCloseParen. If any of those are missing we leave the stream as-is.
+	if p.peek().Kind != TokenOpenParen {
+		return ""
+	}
+	// Peek two more tokens ahead to confirm the pattern ( "set"|"get" )
+	nextPos := p.pos + 1
+	if nextPos >= len(p.tokens) {
+		return ""
+	}
+	qualifier := p.tokens[nextPos]
+	if qualifier.Kind != TokenIdentifier || (qualifier.Value != "set" && qualifier.Value != "get") {
+		return ""
+	}
+	closePos := nextPos + 1
+	if closePos >= len(p.tokens) || p.tokens[closePos].Kind != TokenCloseParen {
+		return ""
+	}
+	// Consume '(' qualifier ')'
+	p.advance()               // (
+	name := p.advance().Value // set | get
+	p.advance()               // )
+	return name
+}
+
+// parsePropertyHooks parses a PHP 8.4 property-hook block of the form:
+//
+//	{ get => <expr>; set => <expr>; }
+//	{ get { <body> } set { <body> } }
+//	{ get; }  (interface abstract hook)
+//
+// It consumes the entire block, records the hook kinds in the returned slice,
+// and always makes forward progress. The implementation is brace-balanced so
+// nested braces inside hook bodies do not confuse the outer class-body parser.
+func (p *structParser) parsePropertyHooks() []PropertyHook {
+	var hooks []PropertyHook
+	if _, ok := p.expect(TokenOpenBrace); !ok {
+		return hooks
+	}
+	depth := 1
+	for depth > 0 && p.peek().Kind != TokenEOF {
+		t := p.peek()
+		switch t.Kind {
+		case TokenOpenBrace:
+			depth++
+			p.advance()
+		case TokenCloseBrace:
+			depth--
+			p.advance()
+		case TokenIdentifier:
+			if depth == 1 && (t.Value == "get" || t.Value == "set") {
+				// Record the hook kind then consume the rest of this hook's body.
+				hooks = append(hooks, PropertyHook{Kind: t.Value})
+				p.advance() // consume "get" or "set"
+				// Abstract hook in interface: get; or set;
+				if p.peek().Kind == TokenSemicolon {
+					p.advance()
+					continue
+				}
+				// Short hook: get => <expr>; or set => <expr>;
+				if p.peek().Kind == TokenDoubleArrow {
+					p.advance() // =>
+					// Skip the expression until semicolon, respecting nested braces
+					exprDepth := 0
+					for p.peek().Kind != TokenEOF {
+						switch p.peek().Kind {
+						case TokenOpenBrace:
+							exprDepth++
+						case TokenCloseBrace:
+							if exprDepth == 0 {
+								// End of hook block — don't consume, the outer depth-- will fire
+								goto hookExprDone
+							}
+							exprDepth--
+						case TokenSemicolon:
+							if exprDepth == 0 {
+								p.advance() // consume ;
+								goto hookExprDone
+							}
+						}
+						p.advance()
+					}
+				hookExprDone:
+				} else if p.peek().Kind == TokenOpenBrace {
+					// Long hook: set { <body> }
+					hookDepth := 1
+					p.advance() // {
+					for hookDepth > 0 && p.peek().Kind != TokenEOF {
+						switch p.peek().Kind {
+						case TokenOpenBrace:
+							hookDepth++
+						case TokenCloseBrace:
+							hookDepth--
+						}
+						p.advance()
+					}
+				}
+			} else {
+				p.advance()
+			}
+		default:
+			p.advance()
+		}
+	}
+	return hooks
 }
