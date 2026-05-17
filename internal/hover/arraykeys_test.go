@@ -10,12 +10,12 @@ import (
 
 func TestGetArrayKeyAt(t *testing.T) {
 	tests := []struct {
-		name      string
-		line      string
-		char      int
-		wantVar   string
-		wantKey   string
-		wantOk    bool
+		name    string
+		line    string
+		char    int
+		wantVar string
+		wantKey string
+		wantOk  bool
 	}{
 		{"single quote", "        $config['host']", 18, "$config", "host", true},
 		{"double quote", `        $config["host"]`, 18, "$config", "host", true},
