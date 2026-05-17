@@ -57,12 +57,12 @@ return [
 
 func TestExtractConfigArgContext(t *testing.T) {
 	tests := []struct {
-		name       string
-		trimmed    string
-		wantPath   string
+		name        string
+		trimmed     string
+		wantPath    string
 		wantPartial string
-		wantQuote  string
-		wantOk     bool
+		wantQuote   string
+		wantOk      bool
 	}{
 		{"empty single quote", "config('", "", "", "'", true},
 		{"empty double quote", `config("`, "", "", "\"", true},
