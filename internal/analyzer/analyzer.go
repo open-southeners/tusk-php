@@ -438,7 +438,14 @@ func (a *Analyzer) findSymbolOccurrences(sym *symbols.Symbol, readDocument func(
 		var source string
 		if readDocument != nil {
 			source = readDocument(fileURI)
-		} else {
+		}
+		// Prefer the in-memory source stored by the index to avoid redundant disk I/O.
+		// Fall back to disk only when neither the caller-supplied reader nor the index
+		// has a stored copy (e.g. files indexed without source via IndexFile on older paths).
+		if source == "" {
+			source = a.index.GetFileSource(fileURI)
+		}
+		if source == "" {
 			source = a.readFileFromDisk(fileURI)
 		}
 		if source == "" {
@@ -696,6 +703,13 @@ func (a *Analyzer) GetSignatureHelp(uri, source string, pos protocol.Position) *
 		}
 		l += p.Name
 		sig.Parameters = append(sig.Parameters, protocol.ParameterInformation{Label: l})
+	}
+	// Clamp activeParam so it never exceeds the last valid parameter index.
+	// e.g. a 2-parameter function must have activeParameter in [0, 1].
+	if maxParam := len(sym.Params) - 1; maxParam < 0 {
+		activeParam = 0
+	} else if activeParam > maxParam {
+		activeParam = maxParam
 	}
 	return &protocol.SignatureHelp{Signatures: []protocol.SignatureInformation{sig}, ActiveParameter: activeParam}
 }
