@@ -1,0 +1,101 @@
+[
+  {
+    "_comment": "refs are git tags pinned at authoring time (2026-05-17); verify and repin SHAs in corpus.lock after the first successful fetch-corpus.sh run",
+    "name": "guzzlehttp/psr7",
+    "repo": "https://github.com/guzzlehttp/psr7.git",
+    "ref": "2.7.0",
+    "tier": "pr",
+    "category": "library"
+  },
+  {
+    "name": "monolog/monolog",
+    "repo": "https://github.com/Seldaek/monolog.git",
+    "ref": "3.8.1",
+    "tier": "pr",
+    "category": "library"
+  },
+  {
+    "name": "symfony/console",
+    "repo": "https://github.com/symfony/console.git",
+    "ref": "v7.2.5",
+    "tier": "pr",
+    "category": "library"
+  },
+  {
+    "name": "nikic/php-parser",
+    "repo": "https://github.com/nikic/PHP-Parser.git",
+    "ref": "v5.4.0",
+    "tier": "nightly",
+    "category": "syntax"
+  },
+  {
+    "name": "guzzlehttp/guzzle",
+    "repo": "https://github.com/guzzlehttp/guzzle.git",
+    "ref": "7.9.2",
+    "tier": "nightly",
+    "category": "library"
+  },
+  {
+    "name": "symfony/string",
+    "repo": "https://github.com/symfony/string.git",
+    "ref": "v7.2.5",
+    "tier": "nightly",
+    "category": "library"
+  },
+  {
+    "name": "doctrine/dbal",
+    "repo": "https://github.com/doctrine/dbal.git",
+    "ref": "4.2.2",
+    "tier": "nightly",
+    "category": "library"
+  },
+  {
+    "name": "nesbot/carbon",
+    "repo": "https://github.com/briannesbitt/Carbon.git",
+    "ref": "3.8.6",
+    "tier": "nightly",
+    "category": "library"
+  },
+  {
+    "name": "ramsey/uuid",
+    "repo": "https://github.com/ramsey/uuid.git",
+    "ref": "4.7.6",
+    "tier": "nightly",
+    "category": "library"
+  },
+  {
+    "name": "league/flysystem",
+    "repo": "https://github.com/thephpleague/flysystem.git",
+    "ref": "3.29.1",
+    "tier": "nightly",
+    "category": "library"
+  },
+  {
+    "name": "laravel/framework",
+    "repo": "https://github.com/laravel/framework.git",
+    "ref": "v12.13.0",
+    "tier": "nightly",
+    "category": "framework"
+  },
+  {
+    "name": "tempestphp/tempest",
+    "repo": "https://github.com/tempestphp/tempest-framework.git",
+    "ref": "1.5.0",
+    "tier": "nightly",
+    "category": "framework"
+  },
+  {
+    "name": "laravel/laravel",
+    "repo": "https://github.com/laravel/laravel.git",
+    "ref": "v12.0.0",
+    "tier": "nightly",
+    "category": "app"
+  },
+  {
+    "name": "symfony/demo",
+    "repo": "https://github.com/symfony/demo.git",
+    "ref": "v2.7.0",
+    "tier": "nightly",
+    "category": "app"
+  }
+]

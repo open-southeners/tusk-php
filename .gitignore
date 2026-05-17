@@ -11,3 +11,4 @@ plans/
 CLAUDE.md
 /php-lsp
 *.wasm
+testdata/corpus/_repos/

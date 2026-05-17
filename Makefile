@@ -1,4 +1,4 @@
-.PHONY: build install test clean dev cross-build vscode-ext vscode-package zed-ext zed-package
+.PHONY: build install test clean dev cross-build vscode-ext vscode-package zed-ext zed-package conformance conformance-pr
 
 VERSION ?= 0.4.0
 BINARY  := php-lsp
@@ -44,3 +44,11 @@ zed-package: zed-ext
 	cp $(ZED_DIR)/Cargo.lock $(ZED_PACKAGE_DIR)/
 	cp $(ZED_TARGET) $(ZED_PACKAGE_DIR)/extension.wasm
 	cd $(DIST_DIR) && zip -r $(notdir $(ZED_PACKAGE_ZIP)) $(notdir $(ZED_PACKAGE_DIR))
+
+conformance:
+	bash scripts/fetch-corpus.sh --tier all
+	go test -tags=conformance -race ./internal/conformance/...
+
+conformance-pr:
+	bash scripts/fetch-corpus.sh --tier pr
+	go test -tags=conformance -race ./internal/conformance/...
