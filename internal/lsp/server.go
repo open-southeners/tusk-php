@@ -47,10 +47,18 @@ type Server struct {
 	writer      io.Writer
 	logger      *log.Logger
 	shutdown    bool
+	strict      bool // when true, recovered panics are re-raised after logging
 }
 
 func NewServer(reader io.Reader, writer io.Writer, logger *log.Logger) *Server {
 	return &Server{cfg: config.DefaultConfig(), index: symbols.NewIndex(), schemaCache: models.NewSchemaCache(), documents: make(map[string]string), reader: bufio.NewReader(reader), writer: writer, logger: logger}
+}
+
+// SetStrict enables or disables strict panic mode. In strict mode, recovered
+// panics are re-raised after logging so callers can detect "should-not-happen"
+// panics (e.g. during conformance testing) rather than silently swallowing them.
+func (s *Server) SetStrict(strict bool) {
+	s.strict = strict
 }
 
 func (s *Server) Run() error {
@@ -74,6 +82,9 @@ func (s *Server) Run() error {
 func (s *Server) recoverPanic(context string) {
 	if r := recover(); r != nil {
 		s.logger.Printf("Panic in %s: %v\n%s", context, r, debug.Stack())
+		if s.strict {
+			panic(r)
+		}
 	}
 }
 
@@ -275,9 +286,9 @@ func (s *Server) handleInitialize(msg *jsonRPCMessage) {
 			},
 			CompletionProvider: &protocol.CompletionOptions{TriggerCharacters: []string{".", ">", ":", "$", "\\", "|", "#", "[", "(", "'", "\""}, ResolveProvider: false},
 			HoverProvider:      true, DefinitionProvider: true, ReferencesProvider: true, DocumentSymbolProvider: true,
-			SignatureHelpProvider: &protocol.SignatureHelpOptions{TriggerCharacters: []string{"(", ","}},
-			RenameProvider:       &protocol.RenameOptions{PrepareProvider: true},
-			CodeActionProvider:   &protocol.CodeActionOptions{CodeActionKinds: []string{"refactor", "source"}},
+			SignatureHelpProvider:  &protocol.SignatureHelpOptions{TriggerCharacters: []string{"(", ","}},
+			RenameProvider:         &protocol.RenameOptions{PrepareProvider: true},
+			CodeActionProvider:     &protocol.CodeActionOptions{CodeActionKinds: []string{"refactor", "source"}},
 			ExecuteCommandProvider: &protocol.ExecuteCommandOptions{Commands: []string{"tuskPhpLsp.namespaceForPath"}},
 		},
 		ServerInfo: protocol.ServerInfo{Name: ServerName, Version: ServerVersion},
