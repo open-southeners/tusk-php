@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -255,4 +256,66 @@ func TestServerShutdown(t *testing.T) {
 	if resp["error"] != nil {
 		t.Errorf("expected no error on shutdown, got: %v", resp["error"])
 	}
+}
+
+// TestExitLifecycle drives a full initialize → shutdown → exit notification
+// sequence and asserts that the injected exitFunc is invoked with code 0.
+// This test exercises M4: exitFunc replaces os.Exit so the lifecycle is
+// testable without terminating the test binary.
+func TestExitLifecycle(t *testing.T) {
+	// Build a server with an injected exitFunc so we can observe the call.
+	var exitCalled atomic.Bool
+	var exitCode atomic.Int32
+
+	logger := log.New(io.Discard, "", 0)
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	server := NewServer(inR, outW, logger)
+	server.exitFunc = func(code int) {
+		exitCalled.Store(true)
+		exitCode.Store(int32(code))
+	}
+
+	// Drain server output so writeMessage never blocks.
+	go io.Copy(io.Discard, outR)
+
+	// Run the server in the background.
+	go func() { _ = server.Run() }()
+
+	sendMsg := func(method string, id interface{}, params interface{}) {
+		t.Helper()
+		msg := map[string]interface{}{"jsonrpc": "2.0", "method": method, "params": params}
+		if id != nil {
+			msg["id"] = id
+		}
+		body, _ := json.Marshal(msg)
+		fmt.Fprintf(inW, "Content-Length: %d\r\n\r\n%s", len(body), body)
+	}
+
+	root := testdataPath()
+
+	// 1. initialize
+	sendMsg("initialize", 1, map[string]interface{}{
+		"rootUri":      "file://" + root,
+		"capabilities": map[string]interface{}{},
+		"processId":    nil,
+	})
+	time.Sleep(100 * time.Millisecond)
+
+	// 2. shutdown
+	sendMsg("shutdown", 2, nil)
+	time.Sleep(50 * time.Millisecond)
+
+	// 3. exit — notification (no id)
+	sendMsg("exit", nil, nil)
+	time.Sleep(100 * time.Millisecond)
+
+	if !exitCalled.Load() {
+		t.Error("expected exitFunc to be called by the 'exit' notification handler")
+	}
+	if got := int(exitCode.Load()); got != 0 {
+		t.Errorf("expected exitFunc called with code 0, got %d", got)
+	}
+
+	inW.Close()
 }
