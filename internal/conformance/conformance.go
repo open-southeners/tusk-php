@@ -239,12 +239,6 @@ func extractAnchors(source string) []anchorPoint {
 // scans every indexed file from disk (O(corpus) per call), making it too slow to
 // run at every anchor point across the full corpus. It is still crash-tested via
 // checkFindReferencesSafe separately.
-//
-// Hover and completion on chain-access anchors (anchorArrow, anchorNullsafe,
-// anchorDoubleColon) are excluded because the production resolver has a known
-// mutual-recursion bug (resolveAccessChain ↔ ResolveVariableType via ChainResolver)
-// that causes a fatal stack overflow — not a recoverable panic — on certain inputs.
-// Those anchors still exercise definition and sigHelp which are safe.
 type operationResults struct {
 	definition  *protocol.Location
 	docSymbols  []protocol.DocumentSymbol
@@ -254,8 +248,9 @@ type operationResults struct {
 }
 
 // runOperations exercises provider operations at anchor pos, catching panics.
-// The kind parameter controls which operations are attempted (see comment on
-// operationResults for why chain-access anchors skip hover/completion).
+// The kind parameter controls which operations are attempted: hover and completion
+// run on use-import and member-access anchors; definition, document symbols, and
+// signature help run on all anchors.
 func runOperations(uri, source string, pos protocol.Position, kind anchorKind, prov *providers) (res operationResults, panicErr error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -267,12 +262,12 @@ func runOperations(uri, source string, pos protocol.Position, kind anchorKind, p
 	res.docSymbols = prov.ana.GetDocumentSymbols(uri, source)
 	res.sigHelp = prov.ana.GetSignatureHelp(uri, source, pos)
 
-	// Hover and completion are only safe on use-import anchors: they do not
-	// trigger chain resolution and therefore cannot hit the known infinite-recursion
-	// bug (resolveAccessChain ↔ ResolveVariableType via ChainResolver, fatal stack
-	// overflow). All other anchor kinds may place the cursor inside a chain
-	// expression and trigger the recursion.
-	if kind == anchorUseImport {
+	// Hover and completion are exercised on use-import anchors and on all
+	// member-access anchors (->, ?->, ::). The chain-resolver re-entrancy guard
+	// (C1, fixed in internal/resolve) prevents the fatal stack overflow that
+	// previously occurred when resolveAccessChain ↔ ResolveVariableType cycled
+	// via ChainResolver on self/mutually-referential assignments.
+	if kind == anchorUseImport || kind == anchorArrow || kind == anchorNullsafe || kind == anchorDoubleColon {
 		res.hover = prov.hov.GetHover(uri, source, pos)
 		res.completions = prov.comp.GetCompletions(uri, source, pos)
 	}
