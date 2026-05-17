@@ -15,25 +15,7 @@ _None open. (C1 resolved — see "Resolved" below.)_
 
 ## High
 
-### H1 — PHP 8.4 property hooks are silently dropped
-- **Where:** `internal/parser/parser.go`
-- **What:** `get`/`set` hook syntax in property declarations (`public float $f { get => ...; set => ...; }`) is neither tokenized nor parsed. No `ParseError` is recorded — hook bodies are discarded, so hooked properties look like ordinary properties.
-- **Fix:** Tokenize `get`/`set` as keywords inside a property-hook context (brace immediately after a typed property), then parse the hook bodies in `parseStructure`.
-
-### H2 — PHP 8.5 pipe operator `|>` is silently ignored
-- **Where:** `internal/parser/parser.go`
-- **What:** `|>` is not in the token grammar; `|` and `>` are consumed as separate unrecognized tokens with no error. Pipe expressions are invisible to the LSP. (README/CLAUDE.md already advertise `|>` support.)
-- **Fix:** Add two-character lookahead for `|>` in the tokenizer producing a dedicated token; handle it in expression parsing.
-
-### H3 — Asymmetric visibility `public private(set)` is not parsed
-- **Where:** `internal/parser/parser.go`
-- **What:** The `private(set)` modifier after a primary visibility modifier is not recognised; the parser only recovers silently, which can confuse the member-parsing state machine.
-- **Fix:** After a primary visibility modifier, detect the `identifier(set)`/`identifier(get)` pattern and consume it as a compound asymmetric-visibility specifier.
-
-### H4 — Dynamic class constant fetch `Class::{$name}` is not parsed
-- **Where:** `internal/parser/parser.go`
-- **What:** After `::`, a brace-enclosed variable expression (`{$name}`) is not handled and the dynamic access is silently dropped.
-- **Fix:** After `TokenDoubleColon`, recognise `{` `<variable>` `}` and record a dynamic constant-fetch node.
+_None open. (H1–H4 resolved — see "Resolved" below.)_
 
 ---
 
@@ -88,15 +70,10 @@ _None open. (C1 resolved — see "Resolved" below.)_
 - **What:** Unit 2 added a `FuzzTokenize` target in `internal/parser/`, but the nightly workflow only runs `FuzzParseFile` and `FuzzIndexFile`.
 - **Fix:** Add a nightly step running `FuzzTokenize` with a bounded `-fuzztime`.
 
-### L6 — Corpus manifest refs are unverified
-- **Where:** `testdata/corpus/manifest.json`
-- **What:** Git tags were chosen from known release patterns but not network-verified. Uncertain: `guzzlehttp/guzzle`, `guzzlehttp/psr7`, `tempestphp/tempest` (repo may be `tempest-framework`), `laravel/framework` `v12.13.0`, `symfony/demo` `v2.7.0`.
-- **Fix:** Run `bash scripts/fetch-corpus.sh` once with network access; commit the resulting `testdata/corpus/corpus.lock` (resolved SHAs) as the true pin.
-
-### L7 — Chain-resolver depth guard fires per-method, amplifying pathological cost
-- **Where:** `internal/resolve/resolve.go` (`ResolveVariableType` / `ResolveVariableTypeTyped` depth guard)
-- **What:** The C1 fix bounds recursion via an atomic depth counter shared by both entry methods, so pathological input terminates safely. But the `ChainResolver`/`TypedChainResolver` callback itself does not increment the counter, so on a pathological self-referential chain a guarded call can still fan out into ~1000 callback invocations (bounded, quadratic-ish) before settling. No crash risk — purely cost on rare malformed input.
-- **Fix:** Also depth-guard at the callback boundary, or unify both resolvers under a single shared depth check that the callback participates in.
+### L8 — PHP 8.4 property metadata (hooks, set-visibility) stops at the structural parser
+- **Where:** `internal/parser/compat.go` (`PropertyNode` / `toPropertyNode`), `internal/symbols/index.go`
+- **What:** The H1/H3 fixes record property hooks and asymmetric set-visibility on `parser.PropertyDef`, but `PropertyNode` (the `FileNode` AST shape consumed by `symbols`/`hover`/`completion`) does not carry them, so the new PHP 8.4 metadata is not yet surfaced in hover/completion. The parser-level bug (silent drop / mis-parse) is fixed; this is the remaining enhancement to thread the data through.
+- **Fix:** Add `Hooks` and `SetVisibility` to `PropertyNode`, populate them in `toPropertyNode`, and have the symbol indexer surface them in hover text.
 
 ---
 
@@ -109,4 +86,22 @@ _None open. (C1 resolved — see "Resolved" below.)_
   `internal/resolve/recursion_test.go` reproduce the self-referential and mutual-recursion
   cycles. The conformance harness was updated to exercise hover/completion on member-access
   anchors (`->`, `?->`, `::`) — previously restricted to `use`-import anchors to dodge this
-  crash — and now runs that path with no overflow. Follow-up: see L7.
+  crash — and now runs that path with no overflow.
+
+### H1–H4 — PHP 8.3–8.5 syntax silently dropped `[resolved]`
+- Fixed in `internal/parser/parser.go`: **H1** property hooks (`{ get => …; set => …; }`) are
+  parsed brace-balanced and recorded as `PropertyDef.Hooks`; **H2** the `|>` pipe operator now
+  tokenizes to a dedicated `TokenPipeArrow`; **H3** asymmetric visibility (`public private(set) …`)
+  is consumed as a modifier and recorded as `PropertyDef.SetVisibility`; **H4** dynamic class
+  constant fetch (`Class::{$name}`) parses cleanly without corrupting class structure. Regression
+  tests in `internal/parser/modern_syntax_test.go`. Remaining enhancement tracked as L8.
+
+### L6 — Corpus manifest refs `[resolved]`
+- Corrected in `testdata/corpus/manifest.json`: `guzzlehttp/{guzzle,psr7}` repo URLs → the
+  `guzzle/*` GitHub org, `symfony/string` → `v7.2.6`, `tempestphp/tempest` → the `v1.5.0` tag.
+  The conformance CI job now fetches the corpus successfully.
+
+### L7 — Chain-resolver depth-guard amplification `[resolved]`
+- Fixed by adding a `break` after the `ChainResolver` call in `ResolveVariableType`, matching
+  `ResolveVariableTypeTyped` — once the nearest preceding assignment is processed the scan stops,
+  removing the per-line re-invocation that amplified pathological cost.
