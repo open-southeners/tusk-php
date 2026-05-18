@@ -202,10 +202,10 @@ type DidSaveTextDocumentParams struct {
 
 // InitializeParams for the initialize request.
 type InitializeParams struct {
-	ProcessID             *int                    `json:"processId"`
-	RootURI               string                  `json:"rootUri"`
-	RootPath              string                  `json:"rootPath"`
-	InitializationOptions *InitializationOptions  `json:"initializationOptions,omitempty"`
+	ProcessID             *int                   `json:"processId"`
+	RootURI               string                 `json:"rootUri"`
+	RootPath              string                 `json:"rootPath"`
+	InitializationOptions *InitializationOptions `json:"initializationOptions,omitempty"`
 	Capabilities          struct {
 		TextDocument struct {
 			Completion struct {
@@ -219,20 +219,21 @@ type InitializeParams struct {
 
 // InitializationOptions sent by the client during initialization.
 type InitializationOptions struct {
-	PHPVersion         string   `json:"phpVersion,omitempty"`
-	Framework          string   `json:"framework,omitempty"`
-	ContainerAware     *bool    `json:"containerAware,omitempty"`
-	DiagnosticsEnabled *bool    `json:"diagnosticsEnabled,omitempty"`
-	PHPStanEnabled     *bool    `json:"phpstanEnabled,omitempty"`
-	PHPStanPath        string   `json:"phpstanPath,omitempty"`
-	PHPStanLevel       string   `json:"phpstanLevel,omitempty"`
-	PHPStanConfig      string   `json:"phpstanConfig,omitempty"`
-	PintEnabled        *bool    `json:"pintEnabled,omitempty"`
-	PintPath           string   `json:"pintPath,omitempty"`
-	PintConfig         string   `json:"pintConfig,omitempty"`
-	DatabaseEnabled    *bool    `json:"databaseEnabled,omitempty"`
-	MaxIndexFiles      *int     `json:"maxIndexFiles,omitempty"`
-	ExcludePaths       []string `json:"excludePaths,omitempty"`
+	PHPVersion         string                   `json:"phpVersion,omitempty"`
+	Framework          string                   `json:"framework,omitempty"`
+	ContainerAware     *bool                    `json:"containerAware,omitempty"`
+	DiagnosticsEnabled *bool                    `json:"diagnosticsEnabled,omitempty"`
+	PHPStanEnabled     *bool                    `json:"phpstanEnabled,omitempty"`
+	PHPStanPath        string                   `json:"phpstanPath,omitempty"`
+	PHPStanLevel       string                   `json:"phpstanLevel,omitempty"`
+	PHPStanConfig      string                   `json:"phpstanConfig,omitempty"`
+	PintEnabled        *bool                    `json:"pintEnabled,omitempty"`
+	PintPath           string                   `json:"pintPath,omitempty"`
+	PintConfig         string                   `json:"pintConfig,omitempty"`
+	DatabaseEnabled    *bool                    `json:"databaseEnabled,omitempty"`
+	MaxIndexFiles      *int                     `json:"maxIndexFiles,omitempty"`
+	ExcludePaths       []string                 `json:"excludePaths,omitempty"`
+	InlayHints         *InlayHintsClientOptions `json:"inlayHints,omitempty"`
 }
 
 // InitializeResult for the initialize response.
@@ -249,9 +250,9 @@ type ServerInfo struct {
 
 // TextDocumentSyncOptions describes how text document syncing works.
 type TextDocumentSyncOptions struct {
-	OpenClose bool              `json:"openClose"`
-	Change    int               `json:"change"` // 0=None, 1=Full, 2=Incremental
-	Save      *SaveOptions     `json:"save,omitempty"`
+	OpenClose bool         `json:"openClose"`
+	Change    int          `json:"change"` // 0=None, 1=Full, 2=Incremental
+	Save      *SaveOptions `json:"save,omitempty"`
 }
 
 // SaveOptions for textDocument/didSave notifications.
@@ -259,21 +260,63 @@ type SaveOptions struct {
 	IncludeText bool `json:"includeText"`
 }
 
+// InlayHintKind as defined by LSP spec.
+type InlayHintKind int
+
+const (
+	InlayHintKindType      InlayHintKind = 1
+	InlayHintKindParameter InlayHintKind = 2
+)
+
+// InlayHint represents an inlay hint shown inline in a document.
+type InlayHint struct {
+	Position     Position      `json:"position"`
+	Label        string        `json:"label"`
+	Kind         InlayHintKind `json:"kind,omitempty"`
+	PaddingLeft  bool          `json:"paddingLeft,omitempty"`
+	PaddingRight bool          `json:"paddingRight,omitempty"`
+}
+
+// InlayHintOptions for inlay hint support.
+type InlayHintOptions struct {
+	ResolveProvider bool `json:"resolveProvider,omitempty"`
+}
+
+// InlayHintParams is the params type for textDocument/inlayHint requests.
+type InlayHintParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Range        Range                  `json:"range"`
+}
+
+// InlayHintsClientOptions carries per-flag inlay hint toggles from the client.
+// All fields use *bool so an unset flag is distinguishable from an explicit false.
+type InlayHintsClientOptions struct {
+	Enabled             *bool `json:"enabled,omitempty"`
+	VariableTypes       *bool `json:"variableTypes,omitempty"`
+	ForeachTypes        *bool `json:"foreachTypes,omitempty"`
+	ClosureReturnTypes  *bool `json:"closureReturnTypes,omitempty"`
+	ReturnTypes         *bool `json:"returnTypes,omitempty"`
+	ParameterNames      *bool `json:"parameterNames,omitempty"`
+	SuppressSingleParam *bool `json:"suppressSingleParam,omitempty"`
+	SuppressNameMatch   *bool `json:"suppressNameMatch,omitempty"`
+}
+
 // ServerCapabilities declares server capabilities.
 type ServerCapabilities struct {
-	TextDocumentSync           TextDocumentSyncOptions     `json:"textDocumentSync"`
-	CompletionProvider         *CompletionOptions          `json:"completionProvider,omitempty"`
-	HoverProvider              bool                        `json:"hoverProvider"`
-	DefinitionProvider         bool                        `json:"definitionProvider"`
-	ReferencesProvider         bool                        `json:"referencesProvider"`
-	DocumentSymbolProvider     bool                        `json:"documentSymbolProvider"`
-	WorkspaceSymbolProvider    bool                        `json:"workspaceSymbolProvider"`
-	DiagnosticProvider         *DiagnosticOptions          `json:"diagnosticProvider,omitempty"`
-	SignatureHelpProvider      *SignatureHelpOptions        `json:"signatureHelpProvider,omitempty"`
-	DocumentFormattingProvider bool                        `json:"documentFormattingProvider"`
-	RenameProvider             *RenameOptions              `json:"renameProvider,omitempty"`
-	CodeActionProvider         *CodeActionOptions          `json:"codeActionProvider,omitempty"`
-	ExecuteCommandProvider     *ExecuteCommandOptions      `json:"executeCommandProvider,omitempty"`
+	TextDocumentSync           TextDocumentSyncOptions `json:"textDocumentSync"`
+	CompletionProvider         *CompletionOptions      `json:"completionProvider,omitempty"`
+	HoverProvider              bool                    `json:"hoverProvider"`
+	DefinitionProvider         bool                    `json:"definitionProvider"`
+	ReferencesProvider         bool                    `json:"referencesProvider"`
+	DocumentSymbolProvider     bool                    `json:"documentSymbolProvider"`
+	WorkspaceSymbolProvider    bool                    `json:"workspaceSymbolProvider"`
+	DiagnosticProvider         *DiagnosticOptions      `json:"diagnosticProvider,omitempty"`
+	SignatureHelpProvider      *SignatureHelpOptions   `json:"signatureHelpProvider,omitempty"`
+	DocumentFormattingProvider bool                    `json:"documentFormattingProvider"`
+	RenameProvider             *RenameOptions          `json:"renameProvider,omitempty"`
+	CodeActionProvider         *CodeActionOptions      `json:"codeActionProvider,omitempty"`
+	ExecuteCommandProvider     *ExecuteCommandOptions  `json:"executeCommandProvider,omitempty"`
+	InlayHintProvider          *InlayHintOptions       `json:"inlayHintProvider,omitempty"`
 }
 
 // CompletionOptions for completion requests.
@@ -387,9 +430,9 @@ type VersionedTextDocumentIdentifier struct {
 
 // RenameFile is a file operation to rename/move a file.
 type RenameFile struct {
-	Kind   string             `json:"kind"` // always "rename"
-	OldURI string             `json:"oldUri"`
-	NewURI string             `json:"newUri"`
+	Kind    string             `json:"kind"` // always "rename"
+	OldURI  string             `json:"oldUri"`
+	NewURI  string             `json:"newUri"`
 	Options *RenameFileOptions `json:"options,omitempty"`
 }
 
@@ -401,9 +444,9 @@ type RenameFileOptions struct {
 
 // CreateFile is a file operation to create a file.
 type CreateFile struct {
-	Kind    string              `json:"kind"` // always "create"
-	URI     string              `json:"uri"`
-	Options *CreateFileOptions  `json:"options,omitempty"`
+	Kind    string             `json:"kind"` // always "create"
+	URI     string             `json:"uri"`
+	Options *CreateFileOptions `json:"options,omitempty"`
 }
 
 // CreateFileOptions for create file operations.
@@ -414,9 +457,9 @@ type CreateFileOptions struct {
 
 // DeleteFile is a file operation to delete a file.
 type DeleteFile struct {
-	Kind    string              `json:"kind"` // always "delete"
-	URI     string              `json:"uri"`
-	Options *DeleteFileOptions  `json:"options,omitempty"`
+	Kind    string             `json:"kind"` // always "delete"
+	URI     string             `json:"uri"`
+	Options *DeleteFileOptions `json:"options,omitempty"`
 }
 
 // DeleteFileOptions for delete file operations.

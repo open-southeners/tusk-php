@@ -8,28 +8,41 @@ import (
 	"github.com/open-southeners/tusk-php/internal/protocol"
 )
 
+// InlayHintsConfig holds the configuration for inlay hint display.
+type InlayHintsConfig struct {
+	Enabled             bool `json:"enabled"`
+	VariableTypes       bool `json:"variableTypes"`
+	ForeachTypes        bool `json:"foreachTypes"`
+	ClosureReturnTypes  bool `json:"closureReturnTypes"`
+	ReturnTypes         bool `json:"returnTypes"`
+	ParameterNames      bool `json:"parameterNames"`
+	SuppressSingleParam bool `json:"suppressSingleParam"`
+	SuppressNameMatch   bool `json:"suppressNameMatch"`
+}
+
 // Config holds the LSP server configuration.
 type Config struct {
-	PHPVersion         string   `json:"phpVersion"`
-	Framework          string   `json:"framework"`
-	ComposerPath       string   `json:"composerPath"`
-	IncludePaths       []string `json:"includePaths"`
-	ExcludePaths       []string `json:"excludePaths"`
-	ContainerAware     bool     `json:"containerAware"`
-	DiagnosticsEnabled bool     `json:"diagnosticsEnabled"`
-	PHPStanEnabled     *bool    `json:"phpstanEnabled,omitempty"`
-	PHPStanPath        string   `json:"phpstanPath,omitempty"`
-	PHPStanLevel       string   `json:"phpstanLevel,omitempty"`
-	PHPStanConfig      string   `json:"phpstanConfig,omitempty"`
-	PintEnabled        *bool    `json:"pintEnabled,omitempty"`
-	PintPath           string   `json:"pintPath,omitempty"`
-	PintConfig         string   `json:"pintConfig,omitempty"`
-	DatabaseEnabled    *bool    `json:"databaseEnabled,omitempty"`
-	DiagnosticRules    map[string]bool `json:"diagnosticRules,omitempty"`
-	MaxIndexFiles      int             `json:"maxIndexFiles"`
-	StubsPath          string          `json:"stubsPath"`
-	LogLevel           string          `json:"logLevel"`
-	LogFile            string          `json:"logFile"`
+	PHPVersion         string           `json:"phpVersion"`
+	Framework          string           `json:"framework"`
+	ComposerPath       string           `json:"composerPath"`
+	IncludePaths       []string         `json:"includePaths"`
+	ExcludePaths       []string         `json:"excludePaths"`
+	ContainerAware     bool             `json:"containerAware"`
+	DiagnosticsEnabled bool             `json:"diagnosticsEnabled"`
+	PHPStanEnabled     *bool            `json:"phpstanEnabled,omitempty"`
+	PHPStanPath        string           `json:"phpstanPath,omitempty"`
+	PHPStanLevel       string           `json:"phpstanLevel,omitempty"`
+	PHPStanConfig      string           `json:"phpstanConfig,omitempty"`
+	PintEnabled        *bool            `json:"pintEnabled,omitempty"`
+	PintPath           string           `json:"pintPath,omitempty"`
+	PintConfig         string           `json:"pintConfig,omitempty"`
+	DatabaseEnabled    *bool            `json:"databaseEnabled,omitempty"`
+	DiagnosticRules    map[string]bool  `json:"diagnosticRules,omitempty"`
+	MaxIndexFiles      int              `json:"maxIndexFiles"`
+	StubsPath          string           `json:"stubsPath"`
+	LogLevel           string           `json:"logLevel"`
+	LogFile            string           `json:"logFile"`
+	InlayHints         InlayHintsConfig `json:"inlayHints"`
 }
 
 // IsRuleEnabled returns whether a diagnostic rule is enabled.
@@ -56,6 +69,16 @@ func DefaultConfig() *Config {
 		MaxIndexFiles:      10000,
 		LogLevel:           "info",
 		LogFile:            "",
+		InlayHints: InlayHintsConfig{
+			Enabled:             true,
+			VariableTypes:       true,
+			ForeachTypes:        true,
+			ClosureReturnTypes:  true,
+			ReturnTypes:         true,
+			ParameterNames:      true,
+			SuppressSingleParam: true,
+			SuppressNameMatch:   true,
+		},
 	}
 }
 
@@ -118,6 +141,33 @@ func (c *Config) MergeClientOptions(opts *protocol.InitializationOptions) {
 	}
 	if len(opts.ExcludePaths) > 0 {
 		c.ExcludePaths = opts.ExcludePaths
+	}
+	if opts.InlayHints != nil {
+		ih := opts.InlayHints
+		if ih.Enabled != nil {
+			c.InlayHints.Enabled = *ih.Enabled
+		}
+		if ih.VariableTypes != nil {
+			c.InlayHints.VariableTypes = *ih.VariableTypes
+		}
+		if ih.ForeachTypes != nil {
+			c.InlayHints.ForeachTypes = *ih.ForeachTypes
+		}
+		if ih.ClosureReturnTypes != nil {
+			c.InlayHints.ClosureReturnTypes = *ih.ClosureReturnTypes
+		}
+		if ih.ReturnTypes != nil {
+			c.InlayHints.ReturnTypes = *ih.ReturnTypes
+		}
+		if ih.ParameterNames != nil {
+			c.InlayHints.ParameterNames = *ih.ParameterNames
+		}
+		if ih.SuppressSingleParam != nil {
+			c.InlayHints.SuppressSingleParam = *ih.SuppressSingleParam
+		}
+		if ih.SuppressNameMatch != nil {
+			c.InlayHints.SuppressNameMatch = *ih.SuppressNameMatch
+		}
 	}
 }
 

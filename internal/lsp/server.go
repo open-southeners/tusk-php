@@ -20,6 +20,7 @@ import (
 	"github.com/open-southeners/tusk-php/internal/container"
 	"github.com/open-southeners/tusk-php/internal/diagnostics"
 	"github.com/open-southeners/tusk-php/internal/hover"
+	"github.com/open-southeners/tusk-php/internal/inlayhint"
 	"github.com/open-southeners/tusk-php/internal/models"
 	"github.com/open-southeners/tusk-php/internal/parser"
 	"github.com/open-southeners/tusk-php/internal/protocol"
@@ -43,6 +44,7 @@ type Server struct {
 	container   *container.ContainerAnalyzer
 	completion  *completion.Provider
 	hover       *hover.Provider
+	inlayHint   *inlayhint.Provider
 	diag        *diagnostics.Provider
 	analyzer    *analyzer.Analyzer
 	schemaCache *models.SchemaCache
@@ -245,6 +247,8 @@ func (s *Server) handleMessage(msg *jsonRPCMessage) {
 		s.handleRename(msg)
 	case "textDocument/codeAction":
 		s.handleCodeAction(msg)
+	case "textDocument/inlayHint":
+		s.handleInlayHint(msg)
 	case "workspace/executeCommand":
 		s.handleExecuteCommand(msg)
 	default:
@@ -284,6 +288,10 @@ func (s *Server) handleInitialize(msg *jsonRPCMessage) {
 	arrayResolver := models.NewFrameworkArrayResolver(s.index, s.rootPath, s.framework)
 	s.completion = completion.NewProvider(s.index, s.container, s.framework)
 	s.completion.SetArrayResolver(arrayResolver)
+	s.inlayHint = inlayhint.NewProvider(s.index, s.container)
+	s.inlayHint.SetTypedChainResolver(func(expr, source string, pos protocol.Position, file *parser.FileNode) resolve.ResolvedType {
+		return s.completion.ResolveExpressionTypeTyped(expr, source, pos, file)
+	})
 	s.hover = hover.NewProvider(s.index, s.container, s.framework)
 	s.hover.SetArrayResolver(arrayResolver)
 	s.hover.GenericExprResolver = func(expr, source string, pos protocol.Position, file *parser.FileNode) resolve.ResolvedType {
@@ -311,6 +319,7 @@ func (s *Server) handleInitialize(msg *jsonRPCMessage) {
 			RenameProvider:         &protocol.RenameOptions{PrepareProvider: true},
 			CodeActionProvider:     &protocol.CodeActionOptions{CodeActionKinds: []string{"refactor", "source"}},
 			ExecuteCommandProvider: &protocol.ExecuteCommandOptions{Commands: []string{"tuskPhpLsp.namespaceForPath"}},
+			InlayHintProvider:      &protocol.InlayHintOptions{ResolveProvider: false},
 		},
 		ServerInfo: protocol.ServerInfo{Name: ServerName, Version: ServerVersion},
 	})
@@ -522,6 +531,24 @@ func (s *Server) handleCodeAction(msg *jsonRPCMessage) {
 	source := s.getDocument(params.TextDocument.URI)
 	result := s.analyzer.GetCodeActions(params.TextDocument.URI, source, params)
 	s.sendResponse(msg.ID, result)
+}
+
+func (s *Server) handleInlayHint(msg *jsonRPCMessage) {
+	var params protocol.InlayHintParams
+	if json.Unmarshal(msg.Params, &params) != nil {
+		s.sendError(msg.ID, -32602, "Invalid params")
+		return
+	}
+	source := s.getDocument(params.TextDocument.URI)
+	hints := s.inlayHint.GetInlayHints(params.TextDocument.URI, source, &s.cfg.InlayHints)
+	// Filter to the requested line range.
+	filtered := hints[:0]
+	for _, h := range hints {
+		if h.Position.Line >= params.Range.Start.Line && h.Position.Line <= params.Range.End.Line {
+			filtered = append(filtered, h)
+		}
+	}
+	s.sendResponse(msg.ID, filtered)
 }
 
 func (s *Server) handleExecuteCommand(msg *jsonRPCMessage) {
