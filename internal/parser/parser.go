@@ -740,6 +740,9 @@ func (p *structParser) parse() {
 			lastDocComment = t.Value
 			p.advance()
 			continue
+		case TokenHash:
+			p.skipAttributeGroup()
+			continue
 		case TokenNamespace:
 			p.parseNamespace()
 		case TokenUse:
@@ -767,6 +770,27 @@ func (p *structParser) parse() {
 		if p.pos == startPos {
 			p.advance()
 		}
+	}
+}
+
+func (p *structParser) skipAttributeGroup() {
+	if p.peek().Kind != TokenHash {
+		return
+	}
+	p.advance() // #
+	if p.peek().Kind != TokenOpenBracket {
+		return
+	}
+	depth := 1
+	p.advance() // [
+	for depth > 0 && p.peek().Kind != TokenEOF {
+		switch p.peek().Kind {
+		case TokenOpenBracket:
+			depth++
+		case TokenCloseBracket:
+			depth--
+		}
+		p.advance()
 	}
 }
 
@@ -1062,6 +1086,10 @@ func (p *structParser) parseClassBody() (methods []MethodDef, props []PropertyDe
 		if t.Kind == TokenDocComment {
 			docComment = t.Value
 			p.advance()
+			continue
+		}
+		if t.Kind == TokenHash {
+			p.skipAttributeGroup()
 			continue
 		}
 		if t.Kind == TokenCloseBrace {

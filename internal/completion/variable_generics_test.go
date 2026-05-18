@@ -457,3 +457,72 @@ func TestEloquentMagicMethodGenerics(t *testing.T) {
 		}
 	})
 }
+
+func TestDocblockParamGenericPropagation(t *testing.T) {
+	idx := symbols.NewIndex()
+	idx.RegisterBuiltins()
+
+	idx.IndexFile("file:///vendor/Builder.php", `<?php
+namespace Illuminate\Database\Eloquent;
+/**
+ * @template TModel
+ */
+class Builder {}
+`)
+	idx.IndexFile("file:///vendor/JsonApiResponse.php", `<?php
+namespace OpenSoutheners\LaravelApiable\Http;
+use Illuminate\Database\Eloquent\Builder;
+/**
+ * @template T
+ */
+class JsonApiResponse {
+    /** @param class-string<T>|Builder<T> $modelOrQuery @return self */
+    public function using($modelOrQuery): self { return $this; }
+}
+`)
+	idx.IndexFile("file:///app/Category.php", `<?php
+namespace App\Models;
+use Illuminate\Database\Eloquent\Builder;
+class Category {
+    /** @return Builder<static> */
+    public static function query() {}
+}
+`)
+
+	p := NewProvider(idx, nil, "")
+	source := `<?php
+namespace App\Http\Controllers;
+
+use App\Models\Category;
+use OpenSoutheners\LaravelApiable\Http\JsonApiResponse;
+
+class CategoryController {
+    /**
+     * @param JsonApiResponse<Category> $response
+     */
+    public function index(JsonApiResponse $response): mixed {
+        $typed = $response;
+        $used = $response->using(Category::query());
+    }
+}
+`
+
+	resolveTyped := func(expr string, line int) string {
+		file := parser.ParseFile(source)
+		rt := p.ResolveExpressionTypeTyped(expr, source, protocol.Position{Line: line}, file)
+		return rt.String()
+	}
+
+	if got := resolveTyped("$response", 10); got != "OpenSoutheners\\LaravelApiable\\Http\\JsonApiResponse<App\\Models\\Category>" {
+		t.Fatalf("$response got %q", got)
+	}
+	if got := resolveTyped("$typed", 11); got != "OpenSoutheners\\LaravelApiable\\Http\\JsonApiResponse<App\\Models\\Category>" {
+		t.Fatalf("$typed got %q", got)
+	}
+	if got := resolveTyped("$response->using(Category::query())", 11); got != "OpenSoutheners\\LaravelApiable\\Http\\JsonApiResponse<App\\Models\\Category>" {
+		t.Fatalf("using() got %q", got)
+	}
+	if got := resolveTyped("$used", 12); got != "OpenSoutheners\\LaravelApiable\\Http\\JsonApiResponse<App\\Models\\Category>" {
+		t.Fatalf("$used got %q", got)
+	}
+}

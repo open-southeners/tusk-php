@@ -155,6 +155,35 @@ class Service {
 	}
 }
 
+func TestMethodDocCommentPreservedAcrossAttributes(t *testing.T) {
+	source := `<?php
+class CategoryController {
+    /**
+     * @param JsonApiResponse<Category> $response
+     */
+    #[Route('/categories')]
+    public function index(JsonApiResponse $response): mixed {
+        return $response;
+    }
+}
+`
+
+	file := ParseFile(source)
+	if file == nil {
+		t.Fatal("expected parsed file")
+	}
+	if len(file.Classes) != 1 || len(file.Classes[0].Methods) != 1 {
+		t.Fatal("expected one parsed method")
+	}
+	got := file.Classes[0].Methods[0].DocComment
+	if got == "" {
+		t.Fatal("expected method doc comment to survive attributes")
+	}
+	if doc := ParseDocBlock(got); doc == nil || len(doc.Params) != 1 || doc.Params[0].Type != "JsonApiResponse<Category>" {
+		t.Fatalf("unexpected parsed docblock: %#v", doc)
+	}
+}
+
 func TestParseFilePartialResultOnPanic(t *testing.T) {
 	// Valid code should always return a non-nil FileNode
 	source := `<?php

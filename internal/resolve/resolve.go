@@ -5,8 +5,10 @@
 package resolve
 
 import (
+	"runtime"
+	"strconv"
 	"strings"
-	"sync/atomic"
+	"sync"
 
 	"github.com/open-southeners/tusk-php/internal/parser"
 	"github.com/open-southeners/tusk-php/internal/phparray"
@@ -21,6 +23,11 @@ import (
 // are 2–8 hops) but safely below the goroutine stack limit.
 const maxResolveDepth = 32
 
+type resolutionState struct {
+	depth  int
+	active map[string]int
+}
+
 // Resolver provides shared resolution methods that depend on the symbol index.
 type Resolver struct {
 	Index *symbols.Index
@@ -32,17 +39,65 @@ type Resolver struct {
 	// preserving generic parameters. Used for variable type inference that
 	// needs to carry generic context through assignments.
 	TypedChainResolver func(expr string, source string, pos protocol.Position, file *parser.FileNode) ResolvedType
-	// resolveDepth is an atomic re-entrancy counter incremented on every call to
-	// ResolveVariableType / ResolveVariableTypeTyped. When it exceeds maxResolveDepth
-	// (indicating a chain-resolver cycle) the method returns an empty result
-	// immediately, breaking the infinite mutual recursion that would otherwise
-	// overflow the goroutine stack with an uncatchable fatal error.
-	resolveDepth atomic.Int32
+	// Resolution state is tracked per goroutine so recursive chains are guarded
+	// without unrelated concurrent requests sharing the same depth budget.
+	stateMu sync.Mutex
+	states  map[uint64]*resolutionState
 }
 
 // NewResolver creates a resolver with the given symbol index.
 func NewResolver(index *symbols.Index) *Resolver {
-	return &Resolver{Index: index}
+	return &Resolver{Index: index, states: make(map[uint64]*resolutionState)}
+}
+
+func currentGID() uint64 {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	parts := strings.Fields(string(buf[:n]))
+	if len(parts) < 2 {
+		return 0
+	}
+	gid, err := strconv.ParseUint(parts[1], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return gid
+}
+
+func (r *Resolver) enterResolution(key string) (func(), bool) {
+	gid := currentGID()
+
+	r.stateMu.Lock()
+	st := r.states[gid]
+	if st == nil {
+		st = &resolutionState{active: make(map[string]int)}
+		r.states[gid] = st
+	}
+	if st.depth >= maxResolveDepth || st.active[key] > 0 {
+		r.stateMu.Unlock()
+		return nil, false
+	}
+	st.depth++
+	st.active[key]++
+	r.stateMu.Unlock()
+
+	return func() {
+		r.stateMu.Lock()
+		defer r.stateMu.Unlock()
+		st := r.states[gid]
+		if st == nil {
+			return
+		}
+		if st.active[key] > 1 {
+			st.active[key]--
+		} else {
+			delete(st.active, key)
+		}
+		st.depth--
+		if st.depth <= 0 {
+			delete(r.states, gid)
+		}
+	}, true
 }
 
 // ResolveClassName resolves a short or partially-qualified class name to a FQN
@@ -362,6 +417,121 @@ func (r *Resolver) inferArgType(argStr string, lines []string, pos protocol.Posi
 	return ResolvedType{}
 }
 
+func (r *Resolver) resolveDocType(raw string, file *parser.FileNode) ResolvedType {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ResolvedType{}
+	}
+
+	nullable := false
+	if strings.Contains(raw, "|") {
+		if HasNullInUnion(raw) {
+			nullable = true
+		}
+		raw = PickBestUnionPart(raw)
+	}
+
+	rt := ParseGenericType(raw)
+	if rt.IsEmpty() {
+		return ResolvedType{}
+	}
+	rt.Nullable = rt.Nullable || nullable
+	return r.resolveResolvedType(rt, file)
+}
+
+func (r *Resolver) resolveResolvedType(rt ResolvedType, file *parser.FileNode) ResolvedType {
+	if rt.IsEmpty() || (rt.Shape != "" && rt.FQN == "array") {
+		return rt
+	}
+
+	switch rt.FQN {
+	case "self", "static", "$this":
+		return rt
+	default:
+		rt.FQN = r.ResolveClassName(rt.FQN, file)
+	}
+
+	for i := range rt.Params {
+		rt.Params[i] = r.resolveResolvedType(rt.Params[i], file)
+	}
+
+	return rt
+}
+
+func resolveDocParam(doc *parser.DocBlock, varName string) string {
+	if doc == nil {
+		return ""
+	}
+	for _, param := range doc.Params {
+		if param.Name == varName {
+			return param.Type
+		}
+	}
+	return ""
+}
+
+func extractLeadingVariable(expr string) string {
+	if !strings.HasPrefix(expr, "$") {
+		return ""
+	}
+	end := 1
+	for end < len(expr) {
+		c := expr[end]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+			break
+		}
+		end++
+	}
+	if end == 1 {
+		return ""
+	}
+	return expr[:end]
+}
+
+func (r *Resolver) resolveMethodParamTypeTyped(method *parser.MethodNode, varName string, file *parser.FileNode) ResolvedType {
+	for _, param := range method.Params {
+		if param.Name != varName {
+			continue
+		}
+		if docType := resolveDocParam(parser.ParseDocBlock(method.DocComment), varName); docType != "" {
+			if rt := r.resolveDocType(docType, file); !rt.IsEmpty() {
+				return rt
+			}
+		}
+		return ResolvedType{FQN: r.ResolveClassName(param.Type.Name, file)}
+	}
+	return ResolvedType{}
+}
+
+func (r *Resolver) resolveFunctionParamTypeTyped(fn *parser.FunctionNode, varName string, file *parser.FileNode) ResolvedType {
+	for _, param := range fn.Params {
+		if param.Name != varName {
+			continue
+		}
+		if docType := resolveDocParam(parser.ParseDocBlock(fn.DocComment), varName); docType != "" {
+			if rt := r.resolveDocType(docType, file); !rt.IsEmpty() {
+				return rt
+			}
+		}
+		return ResolvedType{FQN: r.ResolveClassName(param.Type.Name, file)}
+	}
+	return ResolvedType{}
+}
+
+func (r *Resolver) resolveMethodParamType(method *parser.MethodNode, varName string, file *parser.FileNode) string {
+	if rt := r.resolveMethodParamTypeTyped(method, varName, file); !rt.IsEmpty() {
+		return rt.BaseFQN()
+	}
+	return ""
+}
+
+func (r *Resolver) resolveFunctionParamType(fn *parser.FunctionNode, varName string, file *parser.FileNode) string {
+	if rt := r.resolveFunctionParamTypeTyped(fn, varName, file); !rt.IsEmpty() {
+		return rt.BaseFQN()
+	}
+	return ""
+}
+
 // inferConstructorGenerics binds a class's @template params from the constructor
 // argument type. E.g., new Collection(array<int, Shape>) → Collection<int, Shape>.
 func (r *Resolver) inferConstructorGenerics(classFQN string, argType ResolvedType) ResolvedType {
@@ -497,15 +667,11 @@ func (r *Resolver) MemberType(member *symbols.Symbol, file *parser.FileNode) str
 // Used by the typed chain resolver so that $categories = Category::query()->get()
 // results in $categories having type Collection<int, Category>.
 func (r *Resolver) ResolveVariableTypeTyped(varName string, lines []string, pos protocol.Position, file *parser.FileNode) ResolvedType {
-	// Guard against infinite mutual recursion with the chain resolver callbacks.
-	// ChainResolver/TypedChainResolver can call back into this function, forming a
-	// cycle on inputs like "$x = $x->foo()". An atomic counter breaks the cycle
-	// without holding a lock, so concurrent resolution on a shared Resolver is safe.
-	depth := r.resolveDepth.Add(1)
-	defer r.resolveDepth.Add(-1)
-	if depth > maxResolveDepth {
+	exit, ok := r.enterResolution("typed|" + varName + "|" + strconv.Itoa(pos.Line))
+	if !ok {
 		return ResolvedType{}
 	}
+	defer exit()
 
 	if file == nil {
 		return ResolvedType{}
@@ -519,9 +685,14 @@ func (r *Resolver) ResolveVariableTypeTyped(varName string, lines []string, pos 
 	// Check parameter types
 	enclosingMethod := FindEnclosingMethod(file, pos)
 	if enclosingMethod != nil {
-		for _, param := range enclosingMethod.Params {
-			if param.Name == varName {
-				return ResolvedType{FQN: r.ResolveClassName(param.Type.Name, file)}
+		if rt := r.resolveMethodParamTypeTyped(enclosingMethod, varName, file); !rt.IsEmpty() {
+			return rt
+		}
+	}
+	for _, fn := range file.Functions {
+		if pos.Line >= fn.StartLine {
+			if rt := r.resolveFunctionParamTypeTyped(&fn, varName, file); !rt.IsEmpty() {
+				return rt
 			}
 		}
 	}
@@ -598,6 +769,13 @@ func (r *Resolver) ResolveVariableTypeTyped(varName string, lines []string, pos 
 			}
 		}
 
+		// $var = $other — preserve the referenced variable's resolved type.
+		if otherVar := extractLeadingVariable(rhs); otherVar != "" && otherVar == strings.TrimSpace(rhs) && otherVar != varName {
+			if rt := r.ResolveVariableTypeTyped(otherVar, lines, pos, file); !rt.IsEmpty() {
+				return rt
+			}
+		}
+
 		// Use typed chain resolver if available
 		if r.TypedChainResolver != nil && (strings.Contains(rhs, "->") || strings.Contains(rhs, "::")) {
 			if rt := r.TypedChainResolver(rhs, strings.Join(lines, "\n"), pos, file); !rt.IsEmpty() {
@@ -624,13 +802,11 @@ func (r *Resolver) ResolveVariableTypeTyped(varName string, lines []string, pos 
 // method/function parameters, class properties, $var = new ClassName(...),
 // @var annotations, and literal type inference.
 func (r *Resolver) ResolveVariableType(varName string, lines []string, pos protocol.Position, file *parser.FileNode) string {
-	// Guard against infinite mutual recursion with the ChainResolver callback.
-	// See the equivalent guard on ResolveVariableTypeTyped for a full explanation.
-	depth := r.resolveDepth.Add(1)
-	defer r.resolveDepth.Add(-1)
-	if depth > maxResolveDepth {
+	exit, ok := r.enterResolution("plain|" + varName + "|" + strconv.Itoa(pos.Line))
+	if !ok {
 		return ""
 	}
+	defer exit()
 
 	if file == nil {
 		return ""
@@ -644,19 +820,15 @@ func (r *Resolver) ResolveVariableType(varName string, lines []string, pos proto
 	// 1. Check enclosing method/function parameter type hints
 	enclosingMethod := FindEnclosingMethod(file, pos)
 	if enclosingMethod != nil {
-		for _, param := range enclosingMethod.Params {
-			if param.Name == varName {
-				return r.ResolveClassName(param.Type.Name, file)
-			}
+		if typ := r.resolveMethodParamType(enclosingMethod, varName, file); typ != "" {
+			return typ
 		}
 	}
 	// Also check standalone function parameters
 	for _, fn := range file.Functions {
 		if pos.Line >= fn.StartLine {
-			for _, param := range fn.Params {
-				if param.Name == varName && param.Type.Name != "" {
-					return r.ResolveClassName(param.Type.Name, file)
-				}
+			if typ := r.resolveFunctionParamType(&fn, varName, file); typ != "" {
+				return typ
 			}
 		}
 	}
@@ -704,6 +876,11 @@ func (r *Resolver) ResolveVariableType(varName string, lines []string, pos proto
 		rhs = strings.TrimSpace(rhs)
 		if t := InferLiteralType(rhs); t != "" {
 			return t
+		}
+		if otherVar := extractLeadingVariable(rhs); otherVar != "" && otherVar == strings.TrimSpace(rhs) && otherVar != varName {
+			if t := r.ResolveVariableType(otherVar, lines, pos, file); t != "" {
+				return t
+			}
 		}
 		// $var = ClassName::method() or $var = $foo->bar()->baz()
 		if r.ChainResolver != nil && (strings.Contains(rhs, "->") || strings.Contains(rhs, "::")) {

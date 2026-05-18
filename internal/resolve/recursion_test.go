@@ -12,11 +12,13 @@ package resolve
 //
 // Inputs like "$x = $x->foo();" or mutual "$a = $b->x(); $b = $a->y();" used to
 // overflow the goroutine stack — a fatal, unrecoverable runtime error. After the
-// fix (atomic re-entrancy depth counter) these inputs must return normally.
+// fix (per-goroutine recursion guard) these inputs must return normally.
 
 import (
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/open-southeners/tusk-php/internal/parser"
 	"github.com/open-southeners/tusk-php/internal/protocol"
@@ -243,10 +245,9 @@ class Logger {
 	}
 }
 
-// TestRecursionGuard_DepthCounterResets confirms that the atomic depth counter
-// returns to zero after a guarded call completes, so subsequent calls are not
-// permanently blocked.
-func TestRecursionGuard_DepthCounterResets(t *testing.T) {
+// TestRecursionGuard_StateClearsAfterGuard confirms that a guarded call clears
+// the resolver state so later resolutions still behave normally.
+func TestRecursionGuard_StateClearsAfterGuard(t *testing.T) {
 	source := `<?php
 $x = $x->foo();
 $logger = new \Monolog\Logger();
@@ -264,19 +265,62 @@ class Logger {}
 
 	pos := protocol.Position{Line: 1}
 
-	// First call: self-referential, depth guard should fire and return ""
+	// First call: self-referential, guard should fire and return ""
 	_ = r.ResolveVariableType("$x", lines, pos, file)
 
-	// Verify the counter came back to zero.
-	if got := r.resolveDepth.Load(); got != 0 {
-		t.Errorf("resolveDepth after guarded call = %d, want 0", got)
+	r.stateMu.Lock()
+	gotStates := len(r.states)
+	r.stateMu.Unlock()
+	if gotStates != 0 {
+		t.Fatalf("resolver state count after guarded call = %d, want 0", gotStates)
 	}
 
-	// Second call: normal resolution must still work — the counter must not be
-	// stuck at a non-zero value.
+	// Second call: normal resolution must still work.
 	pos2 := protocol.Position{Line: 2}
 	got2 := r.ResolveVariableType("$logger", lines, pos2, file)
 	if got2 != "Monolog\\Logger" {
 		t.Errorf("after guarded call, normal resolution got %q, want Monolog\\Logger", got2)
+	}
+}
+
+func TestRecursionGuard_ConcurrentNonRecursiveTypedResolutions(t *testing.T) {
+	source := `<?php
+$result = Factory::make();
+`
+	lines := SplitLines(source)
+	file := parser.ParseFile(source)
+	if file == nil {
+		t.Fatal("expected parsed file")
+	}
+
+	r := NewResolver(symbols.NewIndex())
+	r.TypedChainResolver = func(expr, source string, pos protocol.Position, f *parser.FileNode) ResolvedType {
+		if expr == "Factory::make()" {
+			time.Sleep(20 * time.Millisecond)
+			return ResolvedType{FQN: "App\\Logger"}
+		}
+		return ResolvedType{}
+	}
+
+	const workers = 64
+	var wg sync.WaitGroup
+	results := make(chan string, workers)
+	pos := protocol.Position{Line: 1}
+
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- r.ResolveVariableTypeTyped("$result", lines, pos, file).FQN
+		}()
+	}
+
+	wg.Wait()
+	close(results)
+
+	for got := range results {
+		if got != "App\\Logger" {
+			t.Fatalf("concurrent typed resolution got %q, want App\\Logger", got)
+		}
 	}
 }

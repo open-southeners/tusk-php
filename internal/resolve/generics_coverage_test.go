@@ -320,3 +320,52 @@ class Service {
 		t.Fatalf("got %q", rt.FQN)
 	}
 }
+
+func TestResolveVariableTypeTypedDocblockParamGeneric(t *testing.T) {
+	source := `<?php
+namespace App\Http\Controllers;
+
+use App\Models\Category;
+use OpenSoutheners\LaravelApiable\Http\JsonApiResponse;
+
+class CategoryController {
+    /**
+     * @param JsonApiResponse<Category> $response
+     */
+    #[Route('/categories')]
+    public function index(JsonApiResponse $response): mixed {
+        return $response;
+    }
+}
+`
+
+	idx := symbols.NewIndex()
+	idx.IndexFile("file:///JsonApiResponse.php", `<?php
+namespace OpenSoutheners\LaravelApiable\Http;
+/**
+ * @template T
+ */
+class JsonApiResponse {}
+`)
+	idx.IndexFile("file:///Category.php", `<?php
+namespace App\Models;
+class Category {}
+`)
+	idx.IndexFile("file:///controller.php", source)
+
+	r := NewResolver(idx)
+	file := parser.ParseFile(source)
+	if file == nil {
+		t.Fatal("expected parsed file")
+	}
+
+	pos := protocol.Position{Line: 11}
+	rt := r.ResolveVariableTypeTyped("$response", SplitLines(source), pos, file)
+	if rt.String() != "OpenSoutheners\\LaravelApiable\\Http\\JsonApiResponse<App\\Models\\Category>" {
+		t.Fatalf("got %q", rt.String())
+	}
+
+	if got := r.ResolveVariableType("$response", SplitLines(source), pos, file); got != "OpenSoutheners\\LaravelApiable\\Http\\JsonApiResponse" {
+		t.Fatalf("plain type got %q", got)
+	}
+}

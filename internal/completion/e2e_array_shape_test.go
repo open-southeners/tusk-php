@@ -190,6 +190,24 @@ $first = $col->first();
 		}
 	})
 
+	t.Run("Collection::make() infers element type from vendor union docblock", func(t *testing.T) {
+		source := `<?php
+use Illuminate\Support\Collection;
+$employees = [['id' => 1, 'name' => 'Ruben'], ['id' => 2, 'name' => 'Jorge']];
+$col = Collection::make($employees);
+$first = $col->first();
+`
+		colTyp := resolveTyped("$col", source, 4)
+		if colTyp != "Illuminate\\Support\\Collection<int, array{id: int, name: string}>" {
+			t.Errorf("$col: got %q", colTyp)
+		}
+
+		firstTyp := resolveTyped("$first", source, 5)
+		if firstTyp != "array{id: int, name: string}" && firstTyp != "?array{id: int, name: string}" {
+			t.Errorf("$first: got %q", firstTyp)
+		}
+	})
+
 	t.Run("Full chain: literal → Collection → first()", func(t *testing.T) {
 		source := `<?php
 use Illuminate\Support\Collection;

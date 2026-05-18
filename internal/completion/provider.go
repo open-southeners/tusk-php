@@ -510,6 +510,42 @@ func isTemplateParamName(name string) bool {
 	return name[1] >= 'A' && name[1] <= 'Z' && !strings.Contains(name, "\\")
 }
 
+func splitTopLevelUnion(s string) []string {
+	var parts []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '<':
+			depth++
+		case '>':
+			if depth > 0 {
+				depth--
+			}
+		case '|':
+			if depth == 0 {
+				parts = append(parts, strings.TrimSpace(s[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	parts = append(parts, strings.TrimSpace(s[start:]))
+	return parts
+}
+
+func templateCarrierParamType(raw string) resolve.ResolvedType {
+	for _, part := range splitTopLevelUnion(raw) {
+		if part == "" || part == "null" {
+			continue
+		}
+		rt := resolve.ParseGenericType(part)
+		if len(rt.Params) > 0 {
+			return rt
+		}
+	}
+	return resolve.ResolvedType{}
+}
+
 // resolveMethodTemplateFromArgs binds method-level @template params by
 // matching the first argument's resolved type against the first @param type.
 // E.g., Arr::first($employees) where @param iterable<TKey, TValue> $array
@@ -546,9 +582,7 @@ func (p *Provider) resolveMethodTemplateFromArgs(member *symbols.Symbol, argStr,
 	// Build substitution map from method @template + first @param
 	subst := make(map[string]resolve.ResolvedType)
 	if len(doc.Params) > 0 && len(argType.Params) >= 2 {
-		paramType := doc.Params[0].Type
-		// Parse iterable<TKey, TValue> or array<TKey, TValue> from the param type
-		paramRT := resolve.ParseGenericType(paramType)
+		paramRT := templateCarrierParamType(doc.Params[0].Type)
 		for i, pp := range paramRT.Params {
 			if i < len(argType.Params) {
 				// Map template name → concrete type
