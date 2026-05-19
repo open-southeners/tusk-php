@@ -185,8 +185,8 @@ $x = new Logger();
 `
 	hints := p.GetInlayHints("file:///test.php", source, allCfg())
 
-	if !hasHintKind(hints, ": Monolog\\Logger", protocol.InlayHintKindType) {
-		t.Errorf("expected ': Monolog\\Logger' type hint, got: %v", labelsOf(hints))
+	if !hasHintKind(hints, ": Logger", protocol.InlayHintKindType) {
+		t.Errorf("expected ': Logger' type hint, got: %v", labelsOf(hints))
 	}
 }
 
@@ -333,8 +333,8 @@ $fn = fn($x) => new Logger();
 `
 	hints := p.GetInlayHints("file:///test.php", source, allCfg())
 	// The arrow function body is "new Logger()" → type is Monolog\Logger.
-	if !hasHintKind(hints, ": Monolog\\Logger", protocol.InlayHintKindType) {
-		t.Errorf("expected ': Monolog\\Logger' closure return hint, got: %v", labelsOf(hints))
+	if !hasHintKind(hints, ": Logger", protocol.InlayHintKindType) {
+		t.Errorf("expected ': Logger' closure return hint, got: %v", labelsOf(hints))
 	}
 }
 
@@ -366,13 +366,13 @@ $fn = fn(): Logger => new Logger();
 	// not two (the second would be the spurious closure return hint).
 	count := 0
 	for _, h := range hints {
-		if h.Kind == protocol.InlayHintKindType && h.Label == ": Monolog\\Logger" {
+		if h.Kind == protocol.InlayHintKindType && h.Label == ": Logger" {
 			count++
 		}
 	}
 	// At most 1 type hint (the $fn variable type) is acceptable.
 	if count > 1 {
-		t.Errorf("got %d ': Monolog\\Logger' type hints; want at most 1 (var hint only)", count)
+		t.Errorf("got %d ': Logger' type hints; want at most 1 (var hint only)", count)
 	}
 }
 
@@ -390,8 +390,8 @@ $fn = function() {
 `
 	hints := p.GetInlayHints("file:///test.php", source, allCfg())
 	// The anonymous function body returns new Logger() → ": Monolog\Logger".
-	if !hasHintKind(hints, ": Monolog\\Logger", protocol.InlayHintKindType) {
-		t.Errorf("expected ': Monolog\\Logger' anon fn return hint, got: %v", labelsOf(hints))
+	if !hasHintKind(hints, ": Logger", protocol.InlayHintKindType) {
+		t.Errorf("expected ': Logger' anon fn return hint, got: %v", labelsOf(hints))
 	}
 }
 
@@ -708,13 +708,25 @@ $svc->twoArgs($loggerA, $loggerB);
 	})
 
 	t.Run("ReturnTypes=false removes method return hints", func(t *testing.T) {
+		// Other ": Logger" hints (var types, closures) sit on different lines, so
+		// isolate the method-return category by asserting on the signature line.
+		sigLine := lineOf(source, "function getLogger")
+		hasReturnHint := false
+		for _, h := range hintsOnLine(allHints, sigLine) {
+			if h.Kind == protocol.InlayHintKindType {
+				hasReturnHint = true
+			}
+		}
+		if !hasReturnHint {
+			t.Fatalf("setup: expected a method return hint on the getLogger signature line")
+		}
+
 		cfg := allCfg()
 		cfg.ReturnTypes = false
 		hints := p2.GetInlayHints("file:///test.php", source, cfg)
-		// The getLogger method had a @return Logger docblock; its hint must be gone.
-		for _, h := range hints {
-			if h.Kind == protocol.InlayHintKindType && h.Label == ": Logger" {
-				t.Errorf("expected no ': Logger' method return hint when ReturnTypes=false, got it")
+		for _, h := range hintsOnLine(hints, sigLine) {
+			if h.Kind == protocol.InlayHintKindType {
+				t.Errorf("expected no method return hint on getLogger line when ReturnTypes=false, got: %q", h.Label)
 			}
 		}
 	})

@@ -20,6 +20,42 @@ func isScalarType(name string) bool {
 	return false
 }
 
+// shortenFQNs rewrites every backslash-qualified name in s to its final
+// segment, so "Illuminate\Support\Collection<int, App\Models\User>" renders as
+// "Collection<int, User>". Tokens without a backslash — scalars, built-ins,
+// generic placeholders — are left untouched, and a leading backslash on a
+// fully-qualified name is dropped.
+func shortenFQNs(s string) string {
+	var sb strings.Builder
+	runStart := -1
+	flush := func(end int) {
+		if runStart < 0 {
+			return
+		}
+		run := s[runStart:end]
+		if idx := strings.LastIndexByte(run, '\\'); idx >= 0 {
+			run = run[idx+1:]
+		}
+		sb.WriteString(run)
+		runStart = -1
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		isRun := c == '\\' || c == '_' ||
+			(c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+		if isRun {
+			if runStart < 0 {
+				runStart = i
+			}
+			continue
+		}
+		flush(i)
+		sb.WriteByte(c)
+	}
+	flush(len(s))
+	return sb.String()
+}
+
 // skipNonSig skips whitespace and comment tokens forward, returning the index
 // of the next meaningful token.
 func skipNonSig(tokens []parser.Token, i int) int {
@@ -103,12 +139,10 @@ func (p *Provider) collectVarTypeHints(
 		if rt.IsEmpty() {
 			continue
 		}
-		typStr := rt.String()
+		typStr := shortenFQNs(rt.String())
 		if typStr == "" || typStr == "mixed" {
 			continue
 		}
-		// Strip leading backslash for display
-		typStr = strings.TrimPrefix(typStr, "\\")
 		if isScalarType(typStr) {
 			continue
 		}
@@ -249,7 +283,7 @@ func (p *Provider) collectForeachHints(
 				endChar := kTok.Column + len(kTok.Value)
 				hints = append(hints, protocol.InlayHint{
 					Position:    protocol.Position{Line: kTok.Line, Character: endChar},
-					Label:       ": " + strings.TrimPrefix(rt.String(), "\\"),
+					Label:       ": " + shortenFQNs(rt.String()),
 					Kind:        protocol.InlayHintKindType,
 					PaddingLeft: true,
 				})
@@ -262,7 +296,7 @@ func (p *Provider) collectForeachHints(
 				endChar := vTok.Column + len(vTok.Value)
 				hints = append(hints, protocol.InlayHint{
 					Position:    protocol.Position{Line: vTok.Line, Character: endChar},
-					Label:       ": " + strings.TrimPrefix(rt.String(), "\\"),
+					Label:       ": " + shortenFQNs(rt.String()),
 					Kind:        protocol.InlayHintKindType,
 					PaddingLeft: true,
 				})
@@ -343,7 +377,7 @@ func (p *Provider) collectClosureReturnHints(
 			}
 			hints = append(hints, protocol.InlayHint{
 				Position:    hintPos,
-				Label:       ": " + strings.TrimPrefix(rt.String(), "\\"),
+				Label:       ": " + shortenFQNs(rt.String()),
 				Kind:        protocol.InlayHintKindType,
 				PaddingLeft: true,
 			})
@@ -364,7 +398,7 @@ func (p *Provider) collectClosureReturnHints(
 			}
 			hints = append(hints, protocol.InlayHint{
 				Position:    hintPos,
-				Label:       ": " + strings.TrimPrefix(rt.String(), "\\"),
+				Label:       ": " + shortenFQNs(rt.String()),
 				Kind:        protocol.InlayHintKindType,
 				PaddingLeft: true,
 			})
@@ -521,7 +555,7 @@ func (p *Provider) collectMethodReturnHints(result *parser.ParseResult, file *pa
 			if doc == nil || doc.Return.Type == "" {
 				continue
 			}
-			retType := strings.TrimPrefix(doc.Return.Type, "\\")
+			retType := shortenFQNs(doc.Return.Type)
 			if retType == "" || retType == "void" || retType == "mixed" {
 				continue
 			}
